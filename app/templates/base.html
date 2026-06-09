@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}КонтентЗавод{% endblock %}</title>
+    <!-- htmx — локальная копия (app/static/htmx.min.js) -->
+    <script src="/static/htmx.min.js"></script>
+    <style>
+        /* ── Сброс и базовые переменные ── */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg:       #0f1117;
+            --bg2:      #1a1d27;
+            --bg3:      #252836;
+            --border:   #2e3347;
+            --accent:   #6c63ff;
+            --accent2:  #a78bfa;
+            --green:    #22c55e;
+            --red:      #ef4444;
+            --yellow:   #f59e0b;
+            --text:     #e2e8f0;
+            --text2:    #94a3b8;
+            --radius:   8px;
+            --shadow:   0 2px 8px rgba(0,0,0,.4);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ── Навигация ── */
+        nav {
+            background: var(--bg2);
+            border-bottom: 1px solid var(--border);
+            padding: 0 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 2rem;
+            height: 56px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .nav-brand {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--accent2);
+            text-decoration: none;
+            letter-spacing: .02em;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 0.25rem;
+        }
+
+        .nav-links a {
+            color: var(--text2);
+            text-decoration: none;
+            padding: .35rem .75rem;
+            border-radius: var(--radius);
+            font-size: .95rem;
+            transition: background .15s, color .15s;
+        }
+
+        .nav-links a:hover,
+        .nav-links a.active {
+            background: var(--bg3);
+            color: var(--text);
+        }
+
+        /* ── Контент ── */
+        main {
+            flex: 1;
+            padding: 2rem 1.5rem;
+            max-width: 1100px;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 1.5rem; }
+        h2 { font-size: 1.2rem; font-weight: 600; margin-bottom: 1rem; }
+        h3 { font-size: 1rem; font-weight: 600; margin-bottom: .5rem; }
+
+        /* ── Кнопки ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: .4rem;
+            padding: .45rem 1rem;
+            border-radius: var(--radius);
+            font-size: .9rem;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            text-decoration: none;
+            transition: opacity .15s, background .15s;
+        }
+        .btn:hover { opacity: .85; }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
+        .btn-danger  { background: var(--red); color: #fff; }
+        .btn-warning { background: var(--yellow); color: #000; }
+        .btn-success { background: var(--green); color: #000; }
+        .btn-sm { padding: .3rem .7rem; font-size: .82rem; }
+
+        /* ── Карточки ── */
+        .card {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.25rem;
+            box-shadow: var(--shadow);
+        }
+
+        /* ── Формы ── */
+        .form-group { margin-bottom: 1.1rem; }
+
+        label {
+            display: block;
+            font-size: .88rem;
+            color: var(--text2);
+            margin-bottom: .35rem;
+        }
+
+        input[type="text"],
+        input[type="password"],
+        textarea,
+        select {
+            width: 100%;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: .55rem .8rem;
+            border-radius: var(--radius);
+            font-size: .92rem;
+            transition: border-color .15s;
+        }
+        input[type="text"]:focus,
+        input[type="password"]:focus,
+        textarea:focus,
+        select:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        textarea { resize: vertical; min-height: 80px; }
+
+        .form-help {
+            font-size: .8rem;
+            color: var(--text2);
+            margin-top: .3rem;
+        }
+
+        /* ── Алерты ── */
+        .alert {
+            padding: .8rem 1rem;
+            border-radius: var(--radius);
+            margin-bottom: 1rem;
+            font-size: .9rem;
+        }
+        .alert-error   { background: rgba(239,68,68,.15); border: 1px solid var(--red); color: #fca5a5; }
+        .alert-success { background: rgba(34,197,94,.12); border: 1px solid var(--green); color: #86efac; }
+        .alert-info    { background: rgba(108,99,255,.12); border: 1px solid var(--accent); color: var(--accent2); }
+
+        /* ── Бейджи платформ ── */
+        .badge {
+            display: inline-block;
+            padding: .15rem .55rem;
+            border-radius: 999px;
+            font-size: .75rem;
+            font-weight: 600;
+        }
+        .badge-tg   { background: rgba(0,136,204,.2); color: #38bdf8; }
+        .badge-vk   { background: rgba(0,119,255,.2); color: #60a5fa; }
+        .badge-yt   { background: rgba(255,0,0,.15); color: #f87171; }
+        .badge-ig   { background: rgba(225,48,108,.15); color: #f9a8d4; }
+        .badge-dzen { background: rgba(255,102,0,.15); color: #fdba74; }
+
+        /* ── Stat-cards на дашборде ── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        .stat-card {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.1rem 1.25rem;
+            text-align: center;
+        }
+        .stat-num { font-size: 2rem; font-weight: 700; color: var(--accent2); }
+        .stat-label { font-size: .8rem; color: var(--text2); margin-top: .2rem; }
+
+        /* ── Прогресс-бар заполненности профиля ── */
+        .progress-bar-wrap {
+            background: var(--bg3);
+            border-radius: 999px;
+            height: 6px;
+            margin: .35rem 0 .15rem;
+        }
+        .progress-bar {
+            height: 6px;
+            border-radius: 999px;
+            background: var(--accent);
+            transition: width .3s;
+        }
+
+        /* ── Разделитель ── */
+        .section-title {
+            font-size: .82rem;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+            color: var(--text2);
+            margin: 2rem 0 .75rem;
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+        }
+        .section-title::after {
+            content: "";
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }
+
+        /* ── Toggle checkbox ── */
+        .toggle-wrap { display: flex; align-items: center; gap: .6rem; }
+        .toggle {
+            appearance: none;
+            width: 38px; height: 20px;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            cursor: pointer;
+            position: relative;
+            transition: background .2s;
+        }
+        .toggle::after {
+            content: "";
+            position: absolute;
+            top: 2px; left: 2px;
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            background: var(--text2);
+            transition: transform .2s, background .2s;
+        }
+        .toggle:checked { background: var(--accent); border-color: var(--accent); }
+        .toggle:checked::after { transform: translateX(18px); background: #fff; }
+
+        /* ── Таблица площадок ── */
+        .platform-grid {
+            display: grid;
+            gap: .75rem;
+        }
+
+        /* ── Утилиты ── */
+        .flex { display: flex; }
+        .flex-center { display: flex; align-items: center; }
+        .gap-sm { gap: .5rem; }
+        .gap-md { gap: 1rem; }
+        .mt-1 { margin-top: .5rem; }
+        .mt-2 { margin-top: 1rem; }
+        .mt-3 { margin-top: 1.5rem; }
+        .mb-1 { margin-bottom: .5rem; }
+        .mb-2 { margin-bottom: 1rem; }
+        .text-muted { color: var(--text2); }
+        .text-sm { font-size: .85rem; }
+        .text-right { text-align: right; }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav>
+        <a href="/" class="nav-brand">⚙️ КонтентЗавод</a>
+        <div class="nav-links">
+            <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Главная</a>
+            <a href="/projects" {% if request.url.path.startswith("/projects") %}class="active"{% endif %}>Проекты</a>
+        </div>
+    </nav>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

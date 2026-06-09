@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}{% if project and project.id %}Редактировать «{{ project.name }}»{% else %}Новый проект{% endif %} — КонтентЗавод{% endblock %}
+
+{% block content %}
+<div class="flex-center gap-md mb-2" style="justify-content:space-between;">
+    <h1 style="margin-bottom:0;">
+        {% if project and project.id %}Редактировать проект{% else %}Новый проект{% endif %}
+    </h1>
+    <a href="{% if project and project.slug %}/projects/{{ project.slug }}{% else %}/projects{% endif %}" class="btn btn-secondary btn-sm">← Назад</a>
+</div>
+
+{% if errors %}
+<div class="alert alert-error">
+    {% for e in errors %}<div>{{ e }}</div>{% endfor %}
+</div>
+{% endif %}
+
+<div class="alert alert-info text-sm">
+    <strong>Совет:</strong> чем подробнее заполнен профиль, тем точнее ИИ генерирует контент.
+    Особенно важны: описание продукта, целевая аудитория и тон голоса.
+</div>
+
+<form method="post" action="{% if project and project.id %}/projects/{{ project.slug }}/edit{% else %}/projects/new{% endif %}">
+    <div class="card" style="margin-bottom:1.5rem;">
+        <h2>Основное</h2>
+
+        <div class="form-group">
+            <label for="name">Название проекта <span style="color:var(--red)">*</span></label>
+            <input type="text" id="name" name="name" required
+                   value="{{ project.name if project else '' }}"
+                   placeholder="Например: Фитнес-клуб «Сила», ИП Иванов — ремонт квартир" />
+        </div>
+
+        <div class="form-group">
+            <label for="description">Описание продукта / услуги</label>
+            <textarea id="description" name="description"
+                      placeholder="Что вы продаёте или предлагаете? Чем вы лучше конкурентов? Кратко опишите суть бизнеса — это основа для всего контента.">{{ project.description if project and project.description else '' }}</textarea>
+            <div class="form-help">Пример: «Онлайн-школа рисования для взрослых новичков. Никакого таланта не нужно, только желание. Уроки 20–30 мин, без домашних заданий.»</div>
+        </div>
+
+        <div class="form-group">
+            <label for="audience">Целевая аудитория (ЦА)</label>
+            <textarea id="audience" name="audience" style="min-height:60px;"
+                      placeholder="Кто ваш идеальный клиент? Возраст, пол, интересы, боли, уровень дохода.">{{ project.audience if project and project.audience else '' }}</textarea>
+            <div class="form-help">Пример: «Женщины 25–45 лет, домохозяйки и в декрете, хотят развиваться творчески, ограниченный бюджет, боятся "у меня нет таланта"»</div>
+        </div>
+
+        <div class="form-group">
+            <label for="tone">Тон голоса</label>
+            <input type="text" id="tone" name="tone"
+                   value="{{ project.tone if project and project.tone else '' }}"
+                   placeholder="Как вы общаетесь с аудиторией?" />
+            <div class="form-help">Пример: «Дружелюбный, вдохновляющий, без официоза. Говорим "ты", добавляем эмодзи умеренно.»</div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom:1.5rem;">
+        <h2>Цели и тематика</h2>
+
+        <div class="form-group">
+            <label for="goals">Цель продвижения</label>
+            <textarea id="goals" name="goals" style="min-height:60px;"
+                      placeholder="Чего хотите достичь через контент? Продажи, подписки, охват, репутация?">{{ project.goals if project and project.goals else '' }}</textarea>
+        </div>
+
+        <div class="form-group">
+            <label for="cta">Целевое действие (CTA)</label>
+            <input type="text" id="cta" name="cta"
+                   value="{{ project.cta if project and project.cta else '' }}"
+                   placeholder="Что должен сделать читатель?" />
+            <div class="form-help">Пример: «Записаться на бесплатный первый урок», «Написать в ЛС», «Перейти на сайт»</div>
+        </div>
+
+        <div class="form-group">
+            <label for="themes">Тематики для генерации идей</label>
+            <textarea id="themes" name="themes" style="min-height:70px;"
+                      placeholder="Перечислите темы и форматы контента, которые подходят вашему проекту.">{{ project.themes if project and project.themes else '' }}</textarea>
+            <div class="form-help">Пример: «кейсы учеников, развенчание мифов о рисовании, лайфхаки для новичков, закулисье уроков, ответы на вопросы»</div>
+        </div>
+
+        <div class="form-group">
+            <label for="forbidden">Стоп-темы / чего избегать</label>
+            <textarea id="forbidden" name="forbidden" style="min-height:60px;"
+                      placeholder="Что НЕЛЬЗЯ упоминать в контенте? Конкуренты, темы, тон?">{{ project.forbidden if project and project.forbidden else '' }}</textarea>
+            <div class="form-help">Пример: «Не упоминать конкурента X, не обещать "быстрый заработок", избегать политики»</div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom:1.5rem;">
+        <h2>Ссылки и дополнительный контекст</h2>
+
+        <div class="form-group">
+            <label for="links">Ссылки (JSON)</label>
+            <textarea id="links" name="links" style="min-height:60px; font-family:monospace;"
+                      placeholder='{"site": "https://example.com", "tg": "https://t.me/myproject"}'>{{ project.links if project and project.links else '' }}</textarea>
+            <div class="form-help">JSON-объект со ссылками на сайт, каналы, соцсети. Используется в CTA.</div>
+        </div>
+
+        <div class="form-group">
+            <label for="extra">Дополнительный контекст для ИИ</label>
+            <textarea id="extra" name="extra"
+                      placeholder="Любая важная информация, которую должен знать ИИ при генерации контента: УТП, прайс, акции, события.">{{ project.extra if project and project.extra else '' }}</textarea>
+        </div>
+    </div>
+
+    <div class="flex gap-sm">
+        <button type="submit" class="btn btn-primary">
+            {% if project and project.id %}Сохранить изменения{% else %}Создать проект{% endif %}
+        </button>
+        <a href="{% if project and project.slug %}/projects/{{ project.slug }}{% else %}/projects{% endif %}" class="btn btn-secondary">Отмена</a>
+    </div>
+</form>
+{% endblock %}

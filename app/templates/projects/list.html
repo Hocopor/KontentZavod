@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Проекты — КонтентЗавод{% endblock %}
+
+{% block content %}
+<div class="flex-center gap-md mb-2" style="justify-content: space-between;">
+    <h1 style="margin-bottom:0">Проекты</h1>
+    <a href="/projects/new" class="btn btn-primary">+ Новый проект</a>
+</div>
+
+{% macro platform_badge(platform) %}
+    {% if platform == 'telegram' %}<span class="badge badge-tg">TG</span>
+    {% elif platform == 'vk' %}<span class="badge badge-vk">VK</span>
+    {% elif platform == 'youtube' %}<span class="badge badge-yt">YT</span>
+    {% elif platform == 'instagram' %}<span class="badge badge-ig">IG</span>
+    {% elif platform == 'dzen' %}<span class="badge badge-dzen">Дзен</span>
+    {% endif %}
+{% endmacro %}
+
+{% if active %}
+<div class="section-title">Активные ({{ active|length }})</div>
+<div style="display:grid; gap:.75rem;">
+    {% for item in active %}
+    {% set p = item.project %}
+    <div class="card flex-center gap-md" style="justify-content:space-between; flex-wrap:wrap;">
+        <div style="flex:1; min-width:200px;">
+            <div class="flex-center gap-sm mb-1">
+                <a href="/projects/{{ p.slug }}" style="color:var(--text); font-weight:600; font-size:1.05rem; text-decoration:none;">
+                    {{ p.name }}
+                </a>
+                {% for pl in item.enabled_platforms %}
+                    {{ platform_badge(pl) }}
+                {% endfor %}
+            </div>
+            {% if p.description %}
+            <div class="text-muted text-sm">{{ p.description[:120] }}{% if p.description|length > 120 %}…{% endif %}</div>
+            {% else %}
+            <div class="text-muted text-sm" style="font-style:italic;">Описание не заполнено</div>
+            {% endif %}
+        </div>
+        <div class="flex gap-sm" style="flex-shrink:0;">
+            <a href="/projects/{{ p.slug }}" class="btn btn-secondary btn-sm">Открыть</a>
+            <a href="/projects/{{ p.slug }}/edit" class="btn btn-secondary btn-sm">Редактировать</a>
+            <form method="post" action="/projects/{{ p.slug }}/archive" style="display:inline;">
+                <button type="submit" class="btn btn-warning btn-sm"
+                        onclick="return confirm('Архивировать проект?')">Архивировать</button>
+            </form>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-info">
+    Нет активных проектов. <a href="/projects/new" style="color:var(--accent2);">Создайте первый →</a>
+</div>
+{% endif %}
+
+{% if archived %}
+<div class="section-title mt-3">Архив ({{ archived|length }})</div>
+<div style="display:grid; gap:.75rem;">
+    {% for item in archived %}
+    {% set p = item.project %}
+    <div class="card flex-center gap-md" style="justify-content:space-between; flex-wrap:wrap; opacity:.7;">
+        <div style="flex:1; min-width:200px;">
+            <div style="font-weight:600; font-size:1rem; color:var(--text2);">{{ p.name }}</div>
+            {% if p.description %}
+            <div class="text-muted text-sm">{{ p.description[:80] }}…</div>
+            {% endif %}
+        </div>
+        <div class="flex gap-sm" style="flex-shrink:0;">
+            <a href="/projects/{{ p.slug }}" class="btn btn-secondary btn-sm">Открыть</a>
+            <form method="post" action="/projects/{{ p.slug }}/unarchive" style="display:inline;">
+                <button type="submit" class="btn btn-success btn-sm">Восстановить</button>
+            </form>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

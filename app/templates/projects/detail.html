@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+
+{% block title %}{{ project.name }} — КонтентЗавод{% endblock %}
+
+{% block content %}
+<!-- Шапка -->
+<div class="flex-center gap-md mb-2" style="justify-content:space-between; flex-wrap:wrap;">
+    <div>
+        <div class="flex-center gap-sm mb-1">
+            <h1 style="margin-bottom:0;">{{ project.name }}</h1>
+            {% if project.status == 'archived' %}
+            <span class="badge" style="background:rgba(148,163,184,.15);color:var(--text2);">архив</span>
+            {% endif %}
+        </div>
+        <div class="text-muted text-sm">slug: {{ project.slug }} · создан {{ project.created_at[:10] }}</div>
+    </div>
+    <div class="flex gap-sm" style="flex-wrap:wrap;">
+        <a href="/projects/{{ project.slug }}/edit" class="btn btn-secondary btn-sm">Редактировать профиль</a>
+        {% if project.status == 'active' %}
+        <form method="post" action="/projects/{{ project.slug }}/archive" style="display:inline;">
+            <button class="btn btn-warning btn-sm" onclick="return confirm('Архивировать проект?')">Архивировать</button>
+        </form>
+        {% else %}
+        <form method="post" action="/projects/{{ project.slug }}/unarchive" style="display:inline;">
+            <button class="btn btn-success btn-sm">Восстановить</button>
+        </form>
+        {% endif %}
+        <form method="post" action="/projects/{{ project.slug }}/delete" style="display:inline;">
+            <button class="btn btn-danger btn-sm"
+                    onclick="return confirm('Удалить проект навсегда? Это нельзя отменить.')">Удалить</button>
+        </form>
+    </div>
+</div>
+
+{% if delete_error %}
+<div class="alert alert-error">{{ delete_error }}</div>
+{% endif %}
+
+<!-- Заполненность профиля -->
+<div class="card mb-2">
+    <div class="flex-center gap-sm" style="justify-content:space-between; margin-bottom:.5rem;">
+        <span class="text-sm">Заполненность профиля</span>
+        <span class="text-sm" style="color:{% if completeness >= 75 %}var(--green){% elif completeness >= 40 %}var(--yellow){% else %}var(--red){% endif %}; font-weight:600;">{{ completeness }}%</span>
+    </div>
+    <div class="progress-bar-wrap">
+        <div class="progress-bar" style="width:{{ completeness }}%; background:{% if completeness >= 75 %}var(--green){% elif completeness >= 40 %}var(--yellow){% else %}var(--red){% endif %};"></div>
+    </div>
+    {% if completeness < 100 %}
+    <div class="text-sm text-muted mt-1">Чем подробнее профиль — тем точнее и релевантнее генерирует ИИ.</div>
+    {% endif %}
+</div>
+
+<!-- Профиль проекта -->
+<div class="card mb-2">
+    <h2>Профиль проекта</h2>
+
+    {% macro field(label, value, placeholder="") %}
+    <div class="mb-1">
+        <div class="text-sm text-muted" style="margin-bottom:.2rem;">{{ label }}</div>
+        <div class="text-sm">{% if value %}{{ value }}{% else %}<span style="color:var(--border); font-style:italic;">{{ placeholder if placeholder else 'не заполнено' }}</span>{% endif %}</div>
+    </div>
+    {% endmacro %}
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:.75rem 2rem;">
+        {{ field("Описание", project.description, "не заполнено — важно для генерации!") }}
+        {{ field("Целевая аудитория", project.audience, "не заполнено — важно!") }}
+        {{ field("Тон голоса", project.tone) }}
+        {{ field("Цель продвижения", project.goals) }}
+        {{ field("CTA", project.cta) }}
+        {{ field("Тематики", project.themes) }}
+    </div>
+    {% if project.forbidden %}
+    <div class="mt-1">
+        <div class="text-sm text-muted mb-1">Стоп-темы</div>
+        <div class="text-sm">{{ project.forbidden }}</div>
+    </div>
+    {% endif %}
+    {% if project.links %}
+    <div class="mt-1">
+        <div class="text-sm text-muted mb-1">Ссылки</div>
+        <div class="text-sm" style="font-family:monospace; color:var(--accent2);">{{ project.links }}</div>
+    </div>
+    {% endif %}
+    {% if project.extra %}
+    <div class="mt-1">
+        <div class="text-sm text-muted mb-1">Доп. контекст</div>
+        <div class="text-sm">{{ project.extra }}</div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Идеи -->
+<div id="ideas-section" class="mb-2">
+    <div class="flex-center gap-md mb-2" style="justify-content:space-between;">
+        <h2 style="margin-bottom:0;" id="ideas">Идеи</h2>
+        {% if project.status == 'active' %}
+        <button class="btn btn-primary btn-sm"
+                hx-post="/projects/{{ project.slug }}/ideas/generate"
+                hx-target="#ideas-list"
+                hx-swap="innerHTML"
+                hx-indicator="#ideas-spinner"
+                onclick="this.disabled=true; this.textContent='Генерирую…'; setTimeout(() => { this.disabled=false; this.textContent='Сгенерировать идеи'; }, 15000)">
+            Сгенерировать идеи
+        </button>
+        {% endif %}
+    </div>
+
+    <!-- Индикатор загрузки (htmx) -->
+    <div id="ideas-spinner" class="htmx-indicator alert alert-info text-sm mb-2"
+         style="display:none;">
+        ⏳ Генерирую идеи, подождите…
+    </div>
+
+    <div class="card" style="padding:1rem;">
+        <div id="ideas-list">
+            {% include "projects/_ideas_list.html" %}
+        </div>
+    </div>
+</div>
+
+<!-- Площадки -->
+<h2>Площадки</h2>
+
+{% for pl in platforms %}
+<details class="card mb-1" {% if pl.enabled %}open{% endif %}>
+    <summary style="cursor:pointer; display:flex; align-items:center; gap:.6rem; list-style:none; user-select:none;">
+        <span style="font-weight:600;">{{ pl.display_name }}</span>
+        {% if pl.enabled %}
+        <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);">включена</span>
+        {% else %}
+        <span class="badge" style="background:rgba(148,163,184,.1);color:var(--text2);">отключена</span>
+        {% endif %}
+        {% if pl.has_credentials %}
+        <span class="badge" style="background:rgba(108,99,255,.1);color:var(--accent2); font-size:.72rem;">токен задан ✓</span>
+        {% endif %}
+    </summary>
+
+    <form method="post" action="/projects/{{ project.slug }}/platform" style="margin-top:1rem;">
+        <input type="hidden" name="platform" value="{{ pl.platform }}" />
+
+        <div class="flex gap-md" style="flex-wrap:wrap; margin-bottom:1rem;">
+            <div class="toggle-wrap">
+                <input type="checkbox" class="toggle" id="enabled_{{ pl.platform }}" name="enabled" value="1"
+                       {% if pl.enabled %}checked{% endif %} />
+                <label for="enabled_{{ pl.platform }}" style="cursor:pointer; margin-bottom:0;">Включена</label>
+            </div>
+            <div class="form-group" style="margin:0;">
+                <label style="display:inline; margin-right:.4rem;">Режим:</label>
+                <select name="mode" style="width:auto; display:inline-block; padding:.3rem .6rem;">
+                    <option value="auto" {% if pl.mode == 'auto' %}selected{% endif %}>Авто</option>
+                    <option value="manual" {% if pl.mode == 'manual' %}selected{% endif %}>Ручной</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Config fields per platform -->
+        {% if pl.platform == 'telegram' %}
+        <div class="form-group">
+            <label>ID канала / группы</label>
+            <input type="text" name="channel_id" value="{{ pl.config_parsed.get('channel_id', '') }}"
+                   placeholder="@mychannel или -1001234567890" />
+            <div class="form-help">Имя канала (с @) или числовой ID. Бот должен быть администратором.</div>
+        </div>
+        {% elif pl.platform == 'vk' %}
+        <div class="form-group">
+            <label>ID группы ВКонтакте</label>
+            <input type="text" name="group_id" value="{{ pl.config_parsed.get('group_id', '') }}"
+                   placeholder="123456789 (без минуса)" />
+        </div>
+        {% elif pl.platform == 'youtube' %}
+        <div class="form-group">
+            <label>Канал YouTube</label>
+            <input type="text" name="channel" value="{{ pl.config_parsed.get('channel', '') }}"
+                   placeholder="UCxxxxxxxxxxxxxxxxxxxxxxxx или @handle" />
+        </div>
+        {% elif pl.platform == 'instagram' %}
+        <div class="form-group">
+            <label>Имя аккаунта Instagram</label>
+            <input type="text" name="account_name" value="{{ pl.config_parsed.get('account', '') }}"
+                   placeholder="my_account (без @)" />
+        </div>
+        {% elif pl.platform == 'dzen' %}
+        <div class="form-group">
+            <label>Имя канала Яндекс.Дзен</label>
+            <input type="text" name="account_name" value="{{ pl.config_parsed.get('account', '') }}"
+                   placeholder="myproject" />
+        </div>
+        {% endif %}
+
+        <div class="form-group">
+            <label>Токен / API-ключ
+                {% if pl.has_credentials %}<span style="color:var(--green);">✓ задан</span>{% endif %}
+            </label>
+            <input type="password" name="credentials_token"
+                   placeholder="{% if pl.has_credentials %}Оставьте пустым, чтобы не менять{% else %}Введите токен{% endif %}" />
+            <div class="form-help">
+                {% if pl.platform == 'telegram' %}Токен Telegram-бота от @BotFather.
+                {% elif pl.platform == 'vk' %}Токен группы VK (manage, wall, photos).
+                {% elif pl.platform == 'youtube' %}OAuth refresh-токен YouTube Data API.
+                {% elif pl.platform == 'instagram' %}Access Token Instagram Graph API.
+                {% elif pl.platform == 'dzen' %}Токен Яндекс.Дзен (PublisherAPI).
+                {% endif %}
+                Хранится в зашифрованном виде.
+            </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-sm">Сохранить настройки площадки</button>
+    </form>
+</details>
+{% endfor %}
+
+{% endblock %}

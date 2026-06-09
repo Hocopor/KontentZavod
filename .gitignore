@@ -1,0 +1,11 @@
+.env
+data/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.claude/settings.local.json
+.pytest_cache/
+*.db
+*.db-wal
+*.db-shm

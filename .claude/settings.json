@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "Get-Content 'A:\\DevAI\\Projects\\KontentZavod\\.claude\\hooks\\check-state.ps1' -Raw | Invoke-Expression",
+            "timeout": 30,
+            "statusMessage": "Проверяю свежесть STATE.md..."
+          }
+        ]
+      }
+    ]
+  }
+}
