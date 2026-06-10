@@ -19,7 +19,7 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(_BASE_DIR / ".env")
 
 # Схема: имя -> (env_var, default, type)
-# type: 'str' | 'bool'
+# type: 'str' | 'bool' | 'int'
 _FIELDS: dict[str, tuple[str, str, str]] = {
     "DB_PATH":             ("DB_PATH",             "data/kontentzavod.db",      "str"),
     "LLM_ROUTER_BASE_URL": ("LLM_ROUTER_BASE_URL", "http://127.0.0.1:8100/v1", "str"),
@@ -34,6 +34,19 @@ _FIELDS: dict[str, tuple[str, str, str]] = {
     # По умолчанию 0 (тесты и dev не запускают фоновый планировщик)
     "ENABLE_SCHEDULER":    ("ENABLE_SCHEDULER",     "0",                        "bool"),
     "DATA_DIR":            ("DATA_DIR",             "data",                     "str"),
+    # ── Видеоконвейер (этап 3) ──
+    # FAKE_TTS=1 -> tts.py не ходит в сеть: тишина через ffmpeg + синтетические тайминги
+    "FAKE_TTS":            ("FAKE_TTS",             "0",                        "bool"),
+    # FAKE_ASSETS=1 -> assets.py не ходит в сеть: плейсхолдеры через ffmpeg lavfi
+    "FAKE_ASSETS":         ("FAKE_ASSETS",          "0",                        "bool"),
+    "PEXELS_API_KEY":      ("PEXELS_API_KEY",       "",                         "str"),
+    "PIXABAY_API_KEY":     ("PIXABAY_API_KEY",      "",                         "str"),
+    # Сколько дней хранить финальные ролики после публикации (SSD 30GB!)
+    "MEDIA_RETENTION_DAYS": ("MEDIA_RETENTION_DAYS", "14",                      "int"),
+    "FFMPEG_BIN":          ("FFMPEG_BIN",           "ffmpeg",                   "str"),
+    "FFPROBE_BIN":         ("FFPROBE_BIN",          "ffprobe",                  "str"),
+    # YouTube Data API v3: 10 000 юнитов/день, videos.insert = 1600 юнитов → ~6 загрузок
+    "YOUTUBE_DAILY_LIMIT": ("YOUTUBE_DAILY_LIMIT",  "6",                        "int"),
 }
 
 
@@ -68,7 +81,11 @@ class Settings:
         # 2. os.environ (monkeypatch.setenv)
         env_var, default, kind = _FIELDS[name]
         raw = os.environ.get(env_var, default)
-        return raw == "1" if kind == "bool" else raw
+        if kind == "bool":
+            return raw == "1"
+        if kind == "int":
+            return int(raw)
+        return raw
 
     @property
     def db_path_absolute(self) -> Path:

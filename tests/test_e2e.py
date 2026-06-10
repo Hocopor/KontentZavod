@@ -576,3 +576,446 @@ class TestScenarioC:
         assert row_retry["status"] == "planned"
         assert row_retry["attempts"] == 0
         assert row_retry["error_text"] is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# СЦЕНАРИЙ D — полный e2e-цикл публикации ВИДЕО через HTTP в dry-run
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestScenarioD:
+    """
+    Полный жизненный цикл видео-контента через HTTP:
+    создание проекта → площадки (telegram, vk, youtube, instagram) →
+    генерация видео-сценария → «В продакшн» → замоканный рендер (status=review) →
+    approve с планированием (planned_at в прошлом) → process_due →
+    проверки dry-run outbox для telegram/vk/youtube + manual_pending для instagram →
+    ручная очередь /manual → done → дашборд/календарь 200.
+
+    Дополнительно: квота YouTube (YOUTUBE_DAILY_LIMIT=0) → PublishDeferred →
+    schedule остался planned, attempts==0, planned_at в будущем.
+    """
+
+    # ── Вспомогательные методы ────────────────────────────────────────────────
+
+    def _create_project_with_video_platforms(self, client) -> tuple[str, int]:
+        """
+        Создаёт проект со всеми четырьмя видео-площадками (telegram, vk, youtube, instagram).
+        Возвращает (slug, project_id).
+        """
+        resp = client.post(
+            "/projects/new",
+            data={
+                "name": "Видео-проект D",
+                "description": "Проект для e2e видео теста",
+                "audience": "Молодёжь 18-35",
+                "tone": "энергичный, современный",
+                "goals": "Набрать просмотры, подписчиков",
+                "cta": "Подписывайтесь!",
+                "themes": "tech, lifestyle, видео",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        slug = resp.headers["location"].split("/projects/")[1].strip("/")
+
+        # telegram (auto)
+        resp = client.post(
+            f"/projects/{slug}/platform",
+            data={
+                "platform": "telegram",
+                "enabled": "1",
+                "mode": "auto",
+                "channel_id": "@videod_test",
+                "credentials_token": "bot_video_token_d",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        # vk (auto)
+        resp = client.post(
+            f"/projects/{slug}/platform",
+            data={
+                "platform": "vk",
+                "enabled": "1",
+                "mode": "auto",
+                "group_id": "12345678",
+                "credentials_token": "vk_access_token_d",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        # youtube (auto)
+        resp = client.post(
+            f"/projects/{slug}/platform",
+            data={
+                "platform": "youtube",
+                "enabled": "1",
+                "mode": "auto",
+                "credentials_token": "yt_token_d",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        # instagram (auto — но всегда уходит в manual)
+        resp = client.post(
+            f"/projects/{slug}/platform",
+            data={
+                "platform": "instagram",
+                "enabled": "1",
+                "mode": "auto",
+                "credentials_token": "ig_token_d",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        with get_db() as db:
+            project_id = db.execute(
+                "SELECT id FROM projects WHERE slug=?", (slug,)
+            ).fetchone()["id"]
+
+        return slug, project_id
+
+    def _make_fake_video_content(self, tmp_path, content_id: int) -> tuple[str, str]:
+        """
+        Создаёт fake mp4 / jpg-файлы в tmp_path/videos/.
+        Возвращает (video_path, preview_path) как строки.
+        """
+        videos_dir = tmp_path / "videos"
+        videos_dir.mkdir(parents=True, exist_ok=True)
+        video_path = videos_dir / f"{content_id}.mp4"
+        preview_path = videos_dir / f"{content_id}.jpg"
+        video_path.write_bytes(b"FAKE_MP4_D")
+        preview_path.write_bytes(b"FAKE_JPG_D")
+        return str(video_path), str(preview_path)
+
+    # ── Основной тест ─────────────────────────────────────────────────────────
+
+    def test_video_publish_full_cycle(self, client, monkeypatch, tmp_path):
+        """
+        Полный e2e-цикл: видео-сценарий → продакшн (замоканный рендер) →
+        approve → process_due → проверки всех четырёх площадок.
+        """
+        _setup_db()
+
+        # ── Шаг 1: создать проект с площадками ───────────────────────────────
+        slug, project_id = self._create_project_with_video_platforms(client)
+
+        # ── Шаг 2: сгенерировать идею и видео-сценарий через HTTP ─────────────
+        resp = client.post(f"/projects/{slug}/ideas/generate")
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            ideas = db.execute(
+                "SELECT id FROM ideas WHERE project_id=? ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+        assert len(ideas) >= 1
+        idea_id = ideas[0]["id"]
+
+        # Кнопка «Футажи» — создаёт video_footage в text_review
+        resp = client.post(
+            f"/ideas/{idea_id}/video_footage",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            content_row = db.execute(
+                "SELECT * FROM content WHERE project_id=? AND type='video_footage'",
+                (project_id,),
+            ).fetchone()
+        assert content_row is not None
+        assert content_row["status"] == "text_review"
+        content_id = content_row["id"]
+
+        # ── Шаг 3: «В продакшн» (approve из text_review → status=production) ─
+        resp = client.post(
+            f"/review/{content_id}/approve",
+            data={},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            status_after_approve = db.execute(
+                "SELECT status FROM content WHERE id=?", (content_id,)
+            ).fetchone()["status"]
+        assert status_after_approve == "production"
+
+        # ── Шаг 4: замоканный рендер — process_production → status=review ────
+        import app.pipeline.produce as produce_module
+
+        video_path_str, preview_path_str = self._make_fake_video_content(tmp_path, content_id)
+
+        def fake_do_render(*args, **kwargs):
+            return tmp_path / "videos" / f"{content_id}.mp4", \
+                   tmp_path / "videos" / f"{content_id}.jpg"
+
+        def fake_synthesize(scene_texts, out_dir, voice="dmitry"):
+            from app.pipeline.tts import SceneAudio, WordTiming
+            out_dir.mkdir(parents=True, exist_ok=True)
+            audios = []
+            for i, text in enumerate(scene_texts):
+                mp3 = out_dir / f"voice_{i+1:02d}.mp3"
+                mp3.write_bytes(b"FAKE_AUDIO")
+                words = [WordTiming(word=w, start=float(j) * 0.4, end=float(j) * 0.4 + 0.4)
+                         for j, w in enumerate(text.split()[:3])]
+                audios.append(SceneAudio(index=i, path=mp3, duration=1.2, words=words))
+            return audios
+
+        def fake_build_ass(words, out_path, words_per_line=3):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text("[Script Info]\n", encoding="utf-8")
+            return out_path
+
+        def fake_fetch_assets(cid, scenes, template):
+            assets_dir = tmp_path / "media" / str(cid) / "assets"
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            paths = []
+            for i in range(len(scenes)):
+                f = assets_dir / f"scene_{i+1:02d}.mp4"
+                f.write_bytes(b"FAKE_ASSET")
+                paths.append(f)
+            return paths
+
+        def fake_pick_music(mood):
+            return None
+
+        def fake_cleanup(cid):
+            pass
+
+        monkeypatch.setattr(produce_module, "synthesize_scenes", fake_synthesize)
+        monkeypatch.setattr(produce_module, "build_ass", fake_build_ass)
+        monkeypatch.setattr(produce_module, "fetch_scene_assets", fake_fetch_assets)
+        monkeypatch.setattr(produce_module, "pick_music", fake_pick_music)
+        monkeypatch.setattr(produce_module, "_do_render", fake_do_render)
+        monkeypatch.setattr(produce_module, "cleanup_after_render", fake_cleanup)
+
+        produce_module.process_production()
+
+        with get_db() as db:
+            row_after_render = db.execute(
+                "SELECT status, files FROM content WHERE id=?", (content_id,)
+            ).fetchone()
+        assert row_after_render["status"] == "review"
+        files = json.loads(row_after_render["files"])
+        assert "video_path" in files
+        assert "preview_path" in files
+
+        # ── Шаг 5: approve с планированием (planned_at в прошлом) ────────────
+        past_dt = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M")
+        resp = client.post(
+            f"/review/{content_id}/approve",
+            data={
+                "schedule_telegram": "1",
+                "planned_at_telegram": past_dt,
+                "schedule_vk": "1",
+                "planned_at_vk": past_dt,
+                "schedule_youtube": "1",
+                "planned_at_youtube": past_dt,
+                "schedule_instagram": "1",
+                "planned_at_instagram": past_dt,
+            },
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            content_status = db.execute(
+                "SELECT status FROM content WHERE id=?", (content_id,)
+            ).fetchone()["status"]
+            schedule_rows = db.execute(
+                "SELECT * FROM schedule WHERE content_id=?", (content_id,)
+            ).fetchall()
+        assert content_status == "approved"
+
+        platforms_in_schedule = {r["platform"] for r in schedule_rows}
+        assert "telegram" in platforms_in_schedule
+        assert "vk" in platforms_in_schedule
+        assert "youtube" in platforms_in_schedule
+        assert "instagram" in platforms_in_schedule
+
+        tg_id = next(r["id"] for r in schedule_rows if r["platform"] == "telegram")
+        vk_id = next(r["id"] for r in schedule_rows if r["platform"] == "vk")
+        yt_id = next(r["id"] for r in schedule_rows if r["platform"] == "youtube")
+        ig_id = next(r["id"] for r in schedule_rows if r["platform"] == "instagram")
+
+        # ── Шаг 6: process_due → публикация ──────────────────────────────────
+        from app.services.scheduling import process_due
+        process_due(now=datetime.now())
+
+        data_dir = cfg_module.settings.data_dir_absolute
+
+        # ── Проверка 1: Telegram → published, outbox method=sendVideo ─────────
+        with get_db() as db:
+            tg_row = db.execute(
+                "SELECT status, published_url FROM schedule WHERE id=?", (tg_id,)
+            ).fetchone()
+        assert tg_row["status"] == "published", (
+            f"telegram: ожидался published, получен {tg_row['status']}"
+        )
+        assert tg_row["published_url"].startswith("dry-run://")
+
+        tg_outbox = data_dir / "outbox" / f"{tg_id}_telegram.json"
+        assert tg_outbox.exists(), f"Outbox telegram не найден: {tg_outbox}"
+        tg_payload = json.loads(tg_outbox.read_text(encoding="utf-8"))
+        assert tg_payload.get("method") == "sendVideo", (
+            f"telegram: ожидался sendVideo, получен {tg_payload.get('method')}"
+        )
+        assert tg_payload.get("video_path"), "telegram: video_path отсутствует в outbox"
+
+        # ── Проверка 2: VK → published, outbox method=video.save, wallpost=1 ──
+        with get_db() as db:
+            vk_row = db.execute(
+                "SELECT status, published_url FROM schedule WHERE id=?", (vk_id,)
+            ).fetchone()
+        assert vk_row["status"] == "published", (
+            f"vk: ожидался published, получен {vk_row['status']}"
+        )
+        assert vk_row["published_url"].startswith("dry-run://")
+
+        vk_outbox = data_dir / "outbox" / f"{vk_id}_vk.json"
+        assert vk_outbox.exists(), f"Outbox vk не найден: {vk_outbox}"
+        vk_payload = json.loads(vk_outbox.read_text(encoding="utf-8"))
+        assert vk_payload.get("method") == "video.save", (
+            f"vk: ожидался video.save, получен {vk_payload.get('method')}"
+        )
+        assert vk_payload.get("wallpost") == 1, "vk: wallpost должен быть 1"
+
+        # ── Проверка 3: YouTube → published, outbox method=videos.insert ──────
+        with get_db() as db:
+            yt_row = db.execute(
+                "SELECT status, published_url FROM schedule WHERE id=?", (yt_id,)
+            ).fetchone()
+        assert yt_row["status"] == "published", (
+            f"youtube: ожидался published, получен {yt_row['status']}"
+        )
+        assert yt_row["published_url"].startswith("dry-run://youtube/"), (
+            f"youtube: неверный URL {yt_row['published_url']}"
+        )
+
+        yt_outbox = data_dir / "outbox" / f"{yt_id}_youtube.json"
+        assert yt_outbox.exists(), f"Outbox youtube не найден: {yt_outbox}"
+        yt_payload = json.loads(yt_outbox.read_text(encoding="utf-8"))
+        assert yt_payload.get("method") == "videos.insert", (
+            f"youtube: ожидался videos.insert, получен {yt_payload.get('method')}"
+        )
+        yt_title = yt_payload.get("title", "")
+        assert "#Shorts" in yt_title or "#shorts" in yt_title.lower(), (
+            f"youtube: title должен содержать #Shorts, получен '{yt_title}'"
+        )
+
+        # ── Проверка 4: Instagram → manual_pending ────────────────────────────
+        with get_db() as db:
+            ig_row = db.execute(
+                "SELECT status FROM schedule WHERE id=?", (ig_id,)
+            ).fetchone()
+        assert ig_row["status"] == "manual_pending", (
+            f"instagram: ожидался manual_pending, получен {ig_row['status']}"
+        )
+
+        # GET /manual содержит <video и ссылку на файл
+        resp = client.get("/manual")
+        assert resp.status_code == 200
+        resp_text = resp.text
+        assert "<video" in resp_text, "/manual должен содержать тег <video"
+        assert f"/files/videos/{content_id}.mp4" in resp_text, (
+            f"/manual должен содержать /files/videos/{content_id}.mp4"
+        )
+
+        # POST /manual/{ig_id}/done → manual_done
+        ig_url = "https://www.instagram.com/p/test_reel_d/"
+        resp = client.post(
+            f"/manual/{ig_id}/done",
+            data={"published_url": ig_url},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            ig_done = db.execute(
+                "SELECT status, published_url FROM schedule WHERE id=?", (ig_id,)
+            ).fetchone()
+        assert ig_done["status"] == "manual_done"
+        assert ig_done["published_url"] == ig_url
+
+        # ── Шаг 7: дашборд и календарь отвечают 200 ──────────────────────────
+        resp = client.get("/")
+        assert resp.status_code == 200
+
+        now = datetime.now()
+        resp = client.get(f"/calendar?year={now.year}&month={now.month}")
+        assert resp.status_code == 200
+
+    # ── Подсценарий: квота YouTube → PublishDeferred → planned без attempts ──
+
+    def test_youtube_quota_deferred(self, client, monkeypatch, tmp_path):
+        """
+        YOUTUBE_DAILY_LIMIT=0 → PublishDeferred при process_due →
+        schedule остался status='planned', attempts==0, planned_at в будущем.
+        """
+        _setup_db()
+
+        # Ставим лимит в 0 через setattr (Settings поддерживает _overrides)
+        monkeypatch.setattr(cfg_module.settings, "YOUTUBE_DAILY_LIMIT", 0)
+
+        # Создаём проект с youtube
+        slug, project_id = self._create_project_with_video_platforms(client)
+
+        # Создаём видео-контент прямо в БД со status=approved и files
+        video_path_str, preview_path_str = self._make_fake_video_content(tmp_path, 99999)
+        files_json = json.dumps({
+            "video_path": video_path_str,
+            "preview_path": preview_path_str,
+        })
+        texts_json = json.dumps({
+            "video": {"voice": "dmitry", "mood": "energetic", "scenes": []},
+            "telegram": {"text": "Текст TG", "hashtags": []},
+            "vk": {"text": "Текст VK", "hashtags": []},
+            "youtube": {"title": "Тест видео", "description": "Описание", "hashtags": []},
+            "instagram": {"caption": "Подпись"},
+        }, ensure_ascii=False)
+        features_json = json.dumps({"hook_type": "вопрос", "topic": "тест", "length": "short",
+                                    "format": "reel", "ab_variant": "null"})
+
+        with get_db() as db:
+            cur = db.execute(
+                """INSERT INTO content (project_id, type, title, texts, features, files, status)
+                   VALUES (?, 'video_footage', 'Квота тест', ?, ?, ?, 'approved')""",
+                (project_id, texts_json, features_json, files_json),
+            )
+            content_id = cur.lastrowid
+
+            planned_past = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+            cur2 = db.execute(
+                """INSERT INTO schedule (content_id, platform, planned_at, status, attempts)
+                   VALUES (?, 'youtube', ?, 'planned', 0)""",
+                (content_id, planned_past),
+            )
+            yt_schedule_id = cur2.lastrowid
+
+        from app.services.scheduling import process_due
+        now = datetime.now()
+        process_due(now=now)
+
+        with get_db() as db:
+            yt_row = db.execute(
+                "SELECT status, attempts, planned_at FROM schedule WHERE id=?",
+                (yt_schedule_id,),
+            ).fetchone()
+
+        assert yt_row["status"] == "planned", (
+            f"YouTube квота: ожидался planned, получен {yt_row['status']}"
+        )
+        assert yt_row["attempts"] == 0, (
+            f"YouTube квота: attempts должен остаться 0, получен {yt_row['attempts']}"
+        )
+        new_planned = datetime.fromisoformat(yt_row["planned_at"])
+        assert new_planned > now, (
+            f"YouTube квота: planned_at должна быть в будущем, получено {new_planned}"
+        )

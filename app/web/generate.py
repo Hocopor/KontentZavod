@@ -15,7 +15,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from app.db import get_db
 from app.llm import LLMError
 from app.pipeline.ideas import generate_ideas
-from app.pipeline.script import generate_script
+from app.pipeline.script import generate_script, generate_script_ab
+from app.pipeline.video_script import generate_video_script
 from app.templates_env import templates
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,125 @@ async def idea_make_script(request: Request, idea_id: int):
         )
 
     return RedirectResponse(f"/projects/{slug}#ideas", status_code=303)
+
+
+# ─── A/B-тест хука: создать два черновика поста ───────────────────────────────
+
+
+@router.post("/ideas/{idea_id}/script_ab", response_class=HTMLResponse)
+async def idea_make_script_ab(request: Request, idea_id: int):
+    """Генерирует два черновика поста (A/B-тест хука) по идее."""
+    with get_db() as db:
+        idea = db.execute(
+            "SELECT i.*, p.slug FROM ideas i JOIN projects p ON p.id=i.project_id WHERE i.id=?",
+            (idea_id,),
+        ).fetchone()
+
+    if idea is None:
+        return HTMLResponse(
+            "<div class='alert alert-error'>Идея не найдена</div>", status_code=404
+        )
+
+    slug = idea["slug"]
+
+    try:
+        generate_script_ab(idea_id)
+    except ValueError as exc:
+        return HTMLResponse(
+            f"<div class='alert alert-error'>{exc}</div>", status_code=400
+        )
+    except LLMError as exc:
+        logger.error("idea_make_script_ab: LLMError для idea_id=%d: %s", idea_id, exc)
+        return HTMLResponse(
+            f"<div class='alert alert-error'>"
+            f"Ошибка генерации A/B-поста. Попробуйте ещё раз.<br>"
+            f"<small style='opacity:.7'>{exc}</small>"
+            f"</div>",
+            status_code=502,
+        )
+
+    is_htmx = request.headers.get("HX-Request") == "true"
+    if is_htmx:
+        project_dict = _get_project_by_slug(slug)
+        ideas = _get_project_ideas(project_dict["id"])
+        draft_count = _draft_count(project_dict["id"])
+        return templates.TemplateResponse(
+            request,
+            "projects/_ideas_list.html",
+            {
+                "project": project_dict,
+                "ideas": ideas,
+                "draft_count": draft_count,
+                "flash": "A/B-черновики созданы (вариант A и B), ждут ревью",
+            },
+        )
+
+    return RedirectResponse(f"/projects/{slug}#ideas", status_code=303)
+
+
+# ─── Создать видео по идее (футажи или слайдшоу) ─────────────────────────────
+
+
+async def _idea_make_video(request: Request, idea_id: int, template: str):
+    """Общая логика генерации видео-сценария (футажи или слайдшоу)."""
+    with get_db() as db:
+        idea = db.execute(
+            "SELECT i.*, p.slug FROM ideas i JOIN projects p ON p.id=i.project_id WHERE i.id=?",
+            (idea_id,),
+        ).fetchone()
+
+    if idea is None:
+        return HTMLResponse(
+            "<div class='alert alert-error'>Идея не найдена</div>", status_code=404
+        )
+
+    slug = idea["slug"]
+
+    try:
+        generate_video_script(idea_id, template)
+    except ValueError as exc:
+        return HTMLResponse(
+            f"<div class='alert alert-error'>{exc}</div>", status_code=400
+        )
+    except LLMError as exc:
+        logger.error("idea_make_video: LLMError для idea_id=%d: %s", idea_id, exc)
+        return HTMLResponse(
+            f"<div class='alert alert-error'>"
+            f"Ошибка генерации видео-сценария. Попробуйте ещё раз.<br>"
+            f"<small style='opacity:.7'>{exc}</small>"
+            f"</div>",
+            status_code=502,
+        )
+
+    is_htmx = request.headers.get("HX-Request") == "true"
+    if is_htmx:
+        project_dict = _get_project_by_slug(slug)
+        ideas = _get_project_ideas(project_dict["id"])
+        draft_count = _draft_count(project_dict["id"])
+        return templates.TemplateResponse(
+            request,
+            "projects/_ideas_list.html",
+            {
+                "project": project_dict,
+                "ideas": ideas,
+                "draft_count": draft_count,
+                "flash": "Видео-сценарий создан, ждёт ревью",
+            },
+        )
+
+    return RedirectResponse(f"/projects/{slug}#ideas", status_code=303)
+
+
+@router.post("/ideas/{idea_id}/video_footage", response_class=HTMLResponse)
+async def idea_make_video_footage(request: Request, idea_id: int):
+    """Генерирует видео-сценарий (тип: футажи) и редиректит на страницу проекта."""
+    return await _idea_make_video(request, idea_id, "video_footage")
+
+
+@router.post("/ideas/{idea_id}/video_slideshow", response_class=HTMLResponse)
+async def idea_make_video_slideshow(request: Request, idea_id: int):
+    """Генерирует видео-сценарий (тип: слайдшоу) и редиректит на страницу проекта."""
+    return await _idea_make_video(request, idea_id, "video_slideshow")
 
 
 # ─── Отклонить идею ───────────────────────────────────────────────────────────

@@ -36,6 +36,10 @@
     max-width: 480px;
     box-shadow: 0 8px 32px rgba(0,0,0,.5);
 }
+.scene-block { margin-bottom: 1.2rem; padding: .75rem; background: var(--bg3); border-radius: var(--radius); }
+.scene-num { font-size: .75rem; color: var(--text2); margin-bottom: .4rem; font-weight: 600; }
+.error-banner { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3);
+                border-radius: var(--radius); padding: .75rem 1rem; margin-bottom: 1rem; }
 </style>
 {% endblock %}
 
@@ -47,12 +51,17 @@
             <span class="badge" style="background:rgba(108,99,255,.15);color:var(--accent2);">
                 {{ content.project_name }}
             </span>
+            {% if is_video %}
+            <span class="badge" style="background:rgba(34,197,94,.12);color:var(--green);">
+                🎬 {{ content.type }}
+            </span>
+            {% endif %}
         </div>
         <h1 style="margin-bottom:0;">
             {{ content.title or 'Без заголовка' }}
         </h1>
         <div class="text-muted text-sm mt-1">
-            Тип: {{ content.type }} · Обновлён: {{ content.updated_at[:16] if content.updated_at else '—' }}
+            Тип: {{ content.type }} · Статус: {{ content.status }} · Обновлён: {{ content.updated_at[:16] if content.updated_at else '—' }}
         </div>
     </div>
 </div>
@@ -62,6 +71,38 @@
 {% endif %}
 {% if error %}
 <div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+{# Ошибка продакшна (если есть) #}
+{% if produce_error %}
+<div class="error-banner">
+    <strong style="color:var(--red);">Ошибка продакшна</strong>
+    (попытка {{ produce_attempts }}/3):
+    <code style="font-size:.8rem;">{{ produce_error }}</code>
+    <form method="post" action="/review/{{ content.id }}/rerender" style="margin-top:.5rem;">
+        <button type="submit" class="btn btn-secondary btn-sm">Перерендерить</button>
+    </form>
+</div>
+{% endif %}
+
+{# Превью готового видео (status='review') #}
+{% if is_video and content.status == 'review' and files.video_path %}
+<div class="card mb-2">
+    <h3 style="margin-bottom:.75rem;">Готовое видео</h3>
+    <video controls
+           style="max-width:100%;max-height:480px;border-radius:var(--radius);"
+           {% if files.preview_path %}poster="/files/videos/{{ content.id }}.jpg"{% endif %}>
+        <source src="/files/videos/{{ content.id }}.mp4" type="video/mp4">
+        Ваш браузер не поддерживает воспроизведение видео.
+    </video>
+    <div class="text-sm text-muted mt-1">
+        <a href="/files/videos/{{ content.id }}.mp4" download>Скачать mp4</a>
+        {% if files.preview_path %} · <a href="/files/videos/{{ content.id }}.jpg" download>Скачать постер</a>{% endif %}
+    </div>
+    <form method="post" action="/review/{{ content.id }}/rerender" style="margin-top:.75rem;">
+        <button type="submit" class="btn btn-secondary btn-sm">Перерендерить</button>
+    </form>
+</div>
 {% endif %}
 
 <!-- Характеристики -->
@@ -82,7 +123,31 @@
 </div>
 {% endif %}
 
-<!-- Тексты по площадкам -->
+{# ── ВИДЕО: сцены озвучки ──────────────────────────────────────────────────── #}
+{% if is_video and content.status == 'text_review' %}
+<form method="post" action="/review/{{ content.id }}/save" id="save-form">
+<div class="card mb-2">
+    <h2>Сцены озвучки</h2>
+    <p class="text-sm text-muted mb-2">
+        Голос: <strong>{{ texts.video.voice if texts.video else '—' }}</strong>
+        · Настроение: <strong>{{ texts.video.mood if texts.video else '—' }}</strong>
+    </p>
+    {% for scene in video_scenes %}
+    <div class="scene-block">
+        <div class="scene-num">Сцена {{ loop.index }} · keywords: {{ scene.keywords | join(', ') }}</div>
+        <textarea name="scene_{{ loop.index0 }}"
+                  rows="3"
+                  style="width:100%;resize:vertical;"
+        >{{ scene.text }}</textarea>
+    </div>
+    {% endfor %}
+</div>
+<button type="submit" class="btn btn-secondary mb-2">Сохранить правки сцен</button>
+</form>
+{% endif %}
+
+{# ── ПОСТЫ: текстовые блоки ────────────────────────────────────────────────── #}
+{% if not is_video or content.status == 'review' %}
 <form method="post" action="/review/{{ content.id }}/save" id="save-form">
 <div class="card mb-2">
     <h2>Тексты по площадкам</h2>
@@ -112,11 +177,56 @@
 </div>
 <button type="submit" class="btn btn-secondary mb-2">Сохранить правки</button>
 </form>
+{% elif is_video and content.status == 'text_review' and platform_data %}
+{# Тексты платформ тоже редактируемы для видео в text_review #}
+<form method="post" action="/review/{{ content.id }}/save" id="save-platforms-form">
+<div class="card mb-2">
+    <h2>Посты-обвязки</h2>
+    {% for pdata in platform_data %}
+    <div class="platform-block">
+        <label for="text_{{ pdata.platform }}">
+            <strong>{{ pdata.name }}</strong>
+            <span class="text-muted" style="font-weight:400;"> — лимит {{ pdata.limit }} симв.</span>
+        </label>
+        <textarea
+            id="text_{{ pdata.platform }}"
+            name="text_{{ pdata.platform }}"
+            rows="5"
+            data-limit="{{ pdata.limit }}"
+            oninput="updateCounter(this)"
+        >{{ pdata.text }}</textarea>
+        <div class="char-counter" id="counter_{{ pdata.platform }}">
+            {{ pdata.text | length }} / {{ pdata.limit }}
+        </div>
+        {% if pdata.raw.get('hashtags') %}
+        <div class="text-sm text-muted mt-1">
+            Хэштеги: {{ pdata.raw.hashtags | join(' ') }}
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+<button type="submit" class="btn btn-secondary mb-2">Сохранить посты-обвязки</button>
+</form>
+{% endif %}
 
-<!-- Одобрение + планирование -->
+<!-- Одобрение -->
 <div class="card mb-2">
     <h2>Одобрить</h2>
     <form method="post" action="/review/{{ content.id }}/approve" id="approve-form">
+
+        {# Видео в text_review: кнопка «В продакшн» #}
+        {% if is_video and content.status == 'text_review' %}
+        <p class="text-sm text-muted mb-2">
+            После одобрения видео будет поставлено в очередь рендера.
+            Когда рендер завершится — вернётся на ревью для финального просмотра и планирования.
+        </p>
+        <div class="flex gap-sm mt-2">
+            <button type="submit" class="btn btn-success">В продакшн ▶</button>
+        </div>
+
+        {# Видео status='review' или пост: стандартное планирование #}
+        {% else %}
         <p class="text-sm text-muted mb-2">
             Выберите площадки для немедленного планирования (необязательно — запланировать можно позже из календаря).
         </p>
@@ -137,6 +247,8 @@
         <div class="flex gap-sm mt-2">
             <button type="submit" class="btn btn-success">Одобрить</button>
         </div>
+        {% endif %}
+
     </form>
 </div>
 

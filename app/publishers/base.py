@@ -14,6 +14,7 @@ DRY-RUN режим (PUBLISH_DRY_RUN=1 или credentials=None):
 """
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import app.config as _cfg
@@ -27,6 +28,17 @@ logger = logging.getLogger(__name__)
 
 class PublishError(Exception):
     """Ошибка публикации — человекочитаемое описание."""
+
+
+class PublishDeferred(Exception):
+    """
+    Публикация отложена (не ошибка): например, исчерпана дневная квота YouTube.
+    process_due() переносит planned_at на retry_at БЕЗ увеличения attempts.
+    """
+
+    def __init__(self, message: str, retry_at: datetime):
+        super().__init__(message)
+        self.retry_at = retry_at
 
 
 # ─── DRY-RUN helpers ──────────────────────────────────────────────────────────
@@ -148,6 +160,18 @@ def publish(schedule_id: int) -> str:
             credentials=credentials,
             config=config,
             texts=texts,
+            files=_parse_files(row_c["files"]),
+            dry_run=is_dry_run,
+        )
+
+    if platform == "youtube":
+        from app.publishers.youtube import publish_youtube
+        return publish_youtube(
+            schedule_id=schedule_id,
+            credentials=credentials,
+            config=config,
+            texts=texts,
+            files=_parse_files(row_c["files"]),
             dry_run=is_dry_run,
         )
 

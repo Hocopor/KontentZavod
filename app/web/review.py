@@ -1,12 +1,16 @@
 """
-Ревью черновиков контента.
+Ревью черновиков контента (посты + видео).
 
 Маршруты:
-    GET  /review                      — список content со status='text_review'
-    GET  /review/{content_id}         — страница ревью одного черновика
-    POST /review/{content_id}/save    — сохранить правки текстов
-    POST /review/{content_id}/approve — одобрить + форма планирования
-    POST /review/{content_id}/reject  — отклонить с причиной
+    GET  /review                         — список content со status IN ('text_review','review')
+    GET  /review/{content_id}            — страница ревью одного черновика
+    POST /review/{content_id}/save       — сохранить правки текстов
+    POST /review/{content_id}/approve    — одобрить
+                                           • type=post / status=text_review → approved + планирование
+                                           • type=video_* / status=text_review → production (без планирования)
+                                           • type=video_* / status=review → approved + планирование
+    POST /review/{content_id}/reject     — отклонить с причиной
+    POST /review/{content_id}/rerender   — сбросить ошибку продакшна (video_*, status production)
 """
 import json
 import logging
@@ -81,34 +85,75 @@ def _build_content_context(content_id: int) -> dict | None:
     except (json.JSONDecodeError, TypeError):
         features = {}
 
-    enabled_platforms = _get_enabled_platforms(c["project_id"])
-    platform_data = []
-    for platform in enabled_platforms:
-        pdata = texts.get(platform, {})
-        # Для youtube текст составной
-        if platform == "youtube":
-            text_value = pdata.get("description", pdata.get("title", ""))
-        elif platform == "dzen":
-            text_value = pdata.get("text", "")
-        elif platform == "instagram":
-            text_value = pdata.get("caption", "")
-        else:
-            text_value = pdata.get("text", "")
+    try:
+        files = json.loads(c["files"]) if c.get("files") else {}
+    except (json.JSONDecodeError, TypeError):
+        files = {}
 
-        platform_data.append({
-            "platform": platform,
-            "name": PLATFORM_NAMES.get(platform, platform),
-            "text": text_value,
-            "limit": PLATFORM_LIMITS.get(platform, 5000),
-            "raw": pdata,
-        })
+    enabled_platforms = _get_enabled_platforms(c["project_id"])
+
+    # ── Для постов: стандартная обработка ─────────────────────────────────────
+    is_video = c["type"] in ("video_footage", "video_slideshow")
+
+    if not is_video:
+        platform_data = []
+        for platform in enabled_platforms:
+            pdata = texts.get(platform, {})
+            if platform == "youtube":
+                text_value = pdata.get("description", pdata.get("title", ""))
+            elif platform == "dzen":
+                text_value = pdata.get("text", "")
+            elif platform == "instagram":
+                text_value = pdata.get("caption", "")
+            else:
+                text_value = pdata.get("text", "")
+
+            platform_data.append({
+                "platform": platform,
+                "name": PLATFORM_NAMES.get(platform, platform),
+                "text": text_value,
+                "limit": PLATFORM_LIMITS.get(platform, 5000),
+                "raw": pdata,
+            })
+    else:
+        # ── Для видео: площадки без dzen ──────────────────────────────────────
+        platform_data = []
+        for platform in enabled_platforms:
+            if platform == "dzen":
+                continue
+            pdata = texts.get(platform, {})
+            if platform == "youtube":
+                text_value = pdata.get("description", pdata.get("title", ""))
+            elif platform == "instagram":
+                text_value = pdata.get("caption", "")
+            else:
+                text_value = pdata.get("text", "")
+
+            platform_data.append({
+                "platform": platform,
+                "name": PLATFORM_NAMES.get(platform, platform),
+                "text": text_value,
+                "limit": PLATFORM_LIMITS.get(platform, 5000),
+                "raw": pdata,
+            })
+
+    # Сцены для видео
+    video_scenes = []
+    if is_video:
+        video_block = texts.get("video", {})
+        video_scenes = video_block.get("scenes", [])
 
     return {
         "content": c,
         "texts": texts,
         "features": features,
+        "files": files,
         "enabled_platforms": enabled_platforms,
         "platform_data": platform_data,
+        "is_video": is_video,
+        "video_scenes": video_scenes,
+        "produce_error": files.get("produce_error"),
+        "produce_attempts": files.get("produce_attempts", 0),
     }
 
 
@@ -125,11 +170,12 @@ async def review_list(request: Request, project_id: str = ""):
         if project_id:
             rows = db.execute(
                 """
-                SELECT c.id, c.title, c.type, c.created_at, c.updated_at,
+                SELECT c.id, c.title, c.type, c.status, c.created_at, c.updated_at,
+                       c.files,
                        p.name AS project_name, p.slug AS project_slug, p.id AS pid
                   FROM content c
                   JOIN projects p ON p.id = c.project_id
-                 WHERE c.status = 'text_review' AND p.id = ?
+                 WHERE c.status IN ('text_review', 'review') AND p.id = ?
                  ORDER BY c.updated_at DESC
                 """,
                 (project_id,),
@@ -137,16 +183,27 @@ async def review_list(request: Request, project_id: str = ""):
         else:
             rows = db.execute(
                 """
-                SELECT c.id, c.title, c.type, c.created_at, c.updated_at,
+                SELECT c.id, c.title, c.type, c.status, c.created_at, c.updated_at,
+                       c.files,
                        p.name AS project_name, p.slug AS project_slug, p.id AS pid
                   FROM content c
                   JOIN projects p ON p.id = c.project_id
-                 WHERE c.status = 'text_review'
+                 WHERE c.status IN ('text_review', 'review')
                  ORDER BY c.updated_at DESC
                 """
             ).fetchall()
 
-    items = [dict(r) for r in rows]
+    # Обогащаем: добавляем produce_error из files JSON
+    items = []
+    for r in rows:
+        item = dict(r)
+        try:
+            files = json.loads(item["files"]) if item.get("files") else {}
+        except (json.JSONDecodeError, TypeError):
+            files = {}
+        item["produce_error"] = files.get("produce_error")
+        items.append(item)
+
     return templates.TemplateResponse(
         request,
         "review/list.html",
@@ -189,20 +246,31 @@ async def review_save(request: Request, content_id: int):
     form_data = await request.form()
     texts = ctx["texts"].copy()
 
-    for platform in ctx["enabled_platforms"]:
-        field_name = f"text_{platform}"
-        if field_name in form_data:
-            new_text = form_data[field_name]
-            if platform not in texts:
-                texts[platform] = {}
-            if platform == "youtube":
-                texts[platform]["description"] = new_text
-            elif platform == "dzen":
-                texts[platform]["text"] = new_text
-            elif platform == "instagram":
-                texts[platform]["caption"] = new_text
-            else:
-                texts[platform]["text"] = new_text
+    if ctx["is_video"]:
+        # Для видео: сцены сохраняются через textarea scene_N
+        video_block = texts.get("video", {})
+        scenes = video_block.get("scenes", [])
+        for i, scene in enumerate(scenes):
+            field_name = f"scene_{i}"
+            if field_name in form_data:
+                scenes[i] = {**scene, "text": form_data[field_name]}
+        video_block["scenes"] = scenes
+        texts["video"] = video_block
+    else:
+        for platform in ctx["enabled_platforms"]:
+            field_name = f"text_{platform}"
+            if field_name in form_data:
+                new_text = form_data[field_name]
+                if platform not in texts:
+                    texts[platform] = {}
+                if platform == "youtube":
+                    texts[platform]["description"] = new_text
+                elif platform == "dzen":
+                    texts[platform]["text"] = new_text
+                elif platform == "instagram":
+                    texts[platform]["caption"] = new_text
+                else:
+                    texts[platform]["text"] = new_text
 
     with get_db() as db:
         db.execute(
@@ -224,25 +292,60 @@ async def review_approve(request: Request, content_id: int):
     if ctx is None:
         return HTMLResponse("Контент не найден", status_code=404)
 
-    # Сохраняем редактированные тексты если есть
+    content = ctx["content"]
+    is_video = ctx["is_video"]
     form_data = await request.form()
-    texts = ctx["texts"].copy()
-    for platform in ctx["enabled_platforms"]:
-        field_name = f"text_{platform}"
-        if field_name in form_data and form_data[field_name].strip():
-            if platform not in texts:
-                texts[platform] = {}
-            new_text = form_data[field_name]
-            if platform == "youtube":
-                texts[platform]["description"] = new_text
-            elif platform == "dzen":
-                texts[platform]["text"] = new_text
-            elif platform == "instagram":
-                texts[platform]["caption"] = new_text
-            else:
-                texts[platform]["text"] = new_text
 
-    # Меняем статус на approved
+    # ── Сохраняем редактированные тексты ──────────────────────────────────────
+    texts = ctx["texts"].copy()
+
+    if is_video:
+        # Сцены из textarea
+        video_block = texts.get("video", {})
+        scenes = video_block.get("scenes", [])
+        for i, scene in enumerate(scenes):
+            field_name = f"scene_{i}"
+            if field_name in form_data and form_data[field_name].strip():
+                scenes[i] = {**scene, "text": form_data[field_name]}
+        video_block["scenes"] = scenes
+        texts["video"] = video_block
+    else:
+        for platform in ctx["enabled_platforms"]:
+            field_name = f"text_{platform}"
+            if field_name in form_data and form_data[field_name].strip():
+                if platform not in texts:
+                    texts[platform] = {}
+                new_text = form_data[field_name]
+                if platform == "youtube":
+                    texts[platform]["description"] = new_text
+                elif platform == "dzen":
+                    texts[platform]["text"] = new_text
+                elif platform == "instagram":
+                    texts[platform]["caption"] = new_text
+                else:
+                    texts[platform]["text"] = new_text
+
+    # ── Логика approve зависит от типа и статуса ──────────────────────────────
+    current_status = content["status"]
+
+    if is_video and current_status == "text_review":
+        # Видео после текстового ревью → в продакшн (рендер)
+        with get_db() as db:
+            db.execute(
+                """
+                UPDATE content
+                   SET status='production', texts=?, updated_at=datetime('now')
+                 WHERE id=?
+                """,
+                (json.dumps(texts, ensure_ascii=False), content_id),
+            )
+
+        return RedirectResponse(
+            "/review?flash=Видео+отправлено+в+продакшн",
+            status_code=303,
+        )
+
+    # Посты и видео после рендера (status='review') → approved + планирование
     with get_db() as db:
         db.execute(
             """
@@ -253,17 +356,22 @@ async def review_approve(request: Request, content_id: int):
             (json.dumps(texts, ensure_ascii=False), content_id),
         )
 
-    # Планирование: для каждой площадки ищем planned_at_{platform}
+    # Планирование
     errors = []
     scheduled_count = 0
     base_time = datetime.now() + timedelta(days=1)
     base_time = base_time.replace(hour=10, minute=0, second=0, microsecond=0)
 
-    for i, platform in enumerate(ctx["enabled_platforms"]):
+    # Для видео планируем только по видео-площадкам (без dzen)
+    platforms_to_schedule = [
+        p for p in ctx["enabled_platforms"]
+        if not (is_video and p == "dzen")
+    ]
+
+    for i, platform in enumerate(platforms_to_schedule):
         field_name = f"planned_at_{platform}"
         check_field = f"schedule_{platform}"
 
-        # Если чекбокс не отмечен — пропускаем
         if check_field not in form_data:
             continue
 
@@ -275,7 +383,6 @@ async def review_approve(request: Request, content_id: int):
                 errors.append(f"Неверный формат даты для {PLATFORM_NAMES.get(platform, platform)}")
                 continue
         else:
-            # Дефолт: завтра 10:00 + i*30 мин
             planned_at = base_time + timedelta(minutes=i * 30)
 
         try:
@@ -328,7 +435,6 @@ async def review_reject(request: Request, content_id: int):
             """,
             (reason, content_id),
         )
-        # Записать в learnings
         insight = f"Отклонено ревьюером: {reason}"
         db.execute(
             """
@@ -339,3 +445,51 @@ async def review_reject(request: Request, content_id: int):
         )
 
     return RedirectResponse("/review?flash=Контент+отклонён", status_code=303)
+
+
+# ─── Перерендерить видео ──────────────────────────────────────────────────────
+
+
+@router.post("/{content_id}/rerender")
+async def review_rerender(request: Request, content_id: int):
+    """
+    Сбросить ошибку продакшна и вернуть контент в статус 'production'
+    для повторного рендера.
+    Применимо только к видеоконтенту.
+    """
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id, type, files FROM content WHERE id=?", (content_id,)
+        ).fetchone()
+
+    if row is None:
+        return HTMLResponse("Контент не найден", status_code=404)
+
+    if row["type"] not in ("video_footage", "video_slideshow"):
+        return HTMLResponse("Перерендер доступен только для видеоконтента", status_code=400)
+
+    try:
+        files = json.loads(row["files"]) if row["files"] else {}
+    except (json.JSONDecodeError, TypeError):
+        files = {}
+
+    # Сбрасываем ошибку и счётчик попыток
+    files.pop("produce_error", None)
+    files.pop("produce_attempts", None)
+
+    with get_db() as db:
+        db.execute(
+            """
+            UPDATE content
+               SET status='production',
+                   files=?,
+                   updated_at=datetime('now')
+             WHERE id=?
+            """,
+            (json.dumps(files, ensure_ascii=False), content_id),
+        )
+
+    return RedirectResponse(
+        "/review?flash=Контент+поставлен+в+очередь+рендера",
+        status_code=303,
+    )

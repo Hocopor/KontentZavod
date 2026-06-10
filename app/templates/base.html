@@ -297,6 +297,7 @@
                 {% endif %}
             </a>
             <a href="/calendar" {% if request.url.path.startswith("/calendar") %}class="active"{% endif %}>Календарь</a>
+            <a href="/analytics" {% if request.url.path.startswith("/analytics") %}class="active"{% endif %}>Аналитика</a>
             <a href="/manual" {% if request.url.path.startswith("/manual") %}class="active"{% endif %}
                style="display:inline-flex;align-items:center;gap:.35rem;">
                 Ручная очередь

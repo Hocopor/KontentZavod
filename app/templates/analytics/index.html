@@ -1,0 +1,371 @@
+{% extends "base.html" %}
+
+{% block title %}Аналитика — КонтентЗавод{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+.charts-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+@media (max-width: 768px) {
+    .charts-row { grid-template-columns: 1fr; }
+}
+.chart-wrap {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+}
+.chart-wrap canvas {
+    max-height: 260px;
+}
+.top-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .88rem;
+}
+.top-table th {
+    text-align: left;
+    color: var(--text2);
+    font-size: .78rem;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    padding: .5rem .6rem;
+    border-bottom: 1px solid var(--border);
+}
+.top-table td {
+    padding: .55rem .6rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+.top-table tr:last-child td { border-bottom: none; }
+.top-table tr:hover td { background: var(--bg3); }
+.metric-badge {
+    display: inline-block;
+    padding: .1rem .45rem;
+    border-radius: 999px;
+    font-size: .72rem;
+    font-weight: 600;
+    background: rgba(108,99,255,.18);
+    color: var(--accent2);
+    margin-right: .2rem;
+}
+.filter-bar {
+    display: flex;
+    gap: .75rem;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    margin-bottom: 2rem;
+}
+.filter-bar label { margin-bottom: .2rem; }
+.filter-bar .form-group { margin-bottom: 0; }
+.manual-form-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr) auto;
+    gap: .5rem;
+    align-items: end;
+}
+@media (max-width: 860px) {
+    .manual-form-row { grid-template-columns: repeat(3, 1fr); }
+    .manual-form-row .btn { grid-column: 1 / -1; }
+}
+.manual-entry {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    margin-bottom: .75rem;
+}
+.manual-entry-header {
+    display: flex;
+    gap: .6rem;
+    align-items: center;
+    margin-bottom: .75rem;
+    flex-wrap: wrap;
+}
+.manual-entry-title {
+    font-weight: 600;
+    font-size: .95rem;
+}
+.num-input {
+    width: 100%;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: .45rem .6rem;
+    border-radius: var(--radius);
+    font-size: .88rem;
+    text-align: right;
+}
+.num-input:focus { outline: none; border-color: var(--accent); }
+</style>
+{% endblock %}
+
+{% block content %}
+
+{% if flash %}
+<div class="alert alert-success">{{ flash }}</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
+    <h1 style="margin-bottom:0;">Аналитика</h1>
+</div>
+
+<!-- Фильтры -->
+<form method="get" action="/analytics">
+    <div class="filter-bar">
+        <div class="form-group">
+            <label>Проект</label>
+            <select name="project_id" style="min-width:180px;">
+                <option value="">Все проекты</option>
+                {% for p in projects %}
+                <option value="{{ p.id }}" {% if selected_project|string == p.id|string %}selected{% endif %}>
+                    {{ p.name }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Период</label>
+            <select name="days">
+                <option value="7"  {% if days == 7  %}selected{% endif %}>7 дней</option>
+                <option value="30" {% if days == 30 %}selected{% endif %}>30 дней</option>
+                <option value="90" {% if days == 90 %}selected{% endif %}>90 дней</option>
+            </select>
+        </div>
+        <button type="submit" class="btn btn-primary">Применить</button>
+    </div>
+</form>
+
+<!-- Сводные карточки -->
+<div class="metrics-grid">
+    <div class="stat-card">
+        <div class="stat-num">{{ summary.total_pubs }}</div>
+        <div class="stat-label">Публикаций</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-num">{{ summary.total_views }}</div>
+        <div class="stat-label">Просмотров</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-num">{{ summary.total_likes }}</div>
+        <div class="stat-label">Лайков</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-num">{{ summary.total_comments }}</div>
+        <div class="stat-label">Комментариев</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-num">{{ summary.total_shares }}</div>
+        <div class="stat-label">Репостов</div>
+    </div>
+</div>
+
+<!-- Графики -->
+<div class="charts-row">
+    <div class="chart-wrap">
+        <h3>Динамика просмотров по дням</h3>
+        <canvas id="lineChart"></canvas>
+    </div>
+    <div class="chart-wrap">
+        <h3>Среднее на публикацию</h3>
+        <canvas id="barChart"></canvas>
+    </div>
+</div>
+
+<!-- Топ-5 и анти-топ-5 -->
+{% if top5 %}
+<div class="card mb-2" style="margin-bottom:1.5rem;">
+    <h2>Топ-5 контента</h2>
+    <table class="top-table">
+        <thead>
+            <tr>
+                <th>Заголовок</th>
+                <th>Платформа</th>
+                <th style="text-align:right;">Просм.</th>
+                <th style="text-align:right;">Лайки</th>
+                <th>Бейджи</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for item in top5 %}
+        <tr>
+            <td>{{ item.title }}</td>
+            <td>
+                <span class="badge badge-{{ item.platform[:2] }}">{{ item.platform_name }}</span>
+            </td>
+            <td style="text-align:right;font-weight:600;">{{ item.views }}</td>
+            <td style="text-align:right;">{{ item.likes }}</td>
+            <td>
+                {% for b in item.badges %}
+                <span class="metric-badge">{{ b }}</span>
+                {% endfor %}
+            </td>
+            <td>
+                {% if item.published_url %}
+                <a href="{{ item.published_url }}" target="_blank" class="btn btn-secondary btn-sm">↗</a>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if anti5 %}
+<div class="card mb-2" style="margin-bottom:1.5rem;">
+    <h2>Анти-топ-5 контента</h2>
+    <table class="top-table">
+        <thead>
+            <tr>
+                <th>Заголовок</th>
+                <th>Платформа</th>
+                <th style="text-align:right;">Просм.</th>
+                <th style="text-align:right;">Лайки</th>
+                <th>Бейджи</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for item in anti5 %}
+        <tr>
+            <td>{{ item.title }}</td>
+            <td>
+                <span class="badge badge-{{ item.platform[:2] }}">{{ item.platform_name }}</span>
+            </td>
+            <td style="text-align:right;font-weight:600;">{{ item.views }}</td>
+            <td style="text-align:right;">{{ item.likes }}</td>
+            <td>
+                {% for b in item.badges %}
+                <span class="metric-badge">{{ b }}</span>
+                {% endfor %}
+            </td>
+            <td>
+                {% if item.published_url %}
+                <a href="{{ item.published_url }}" target="_blank" class="btn btn-secondary btn-sm">↗</a>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Ручной ввод метрик -->
+<div class="section-title">Ручной ввод метрик</div>
+
+{% if manual_list %}
+{% for item in manual_list %}
+<div class="manual-entry">
+    <div class="manual-entry-header">
+        <span class="badge badge-{{ item.platform[:2] }}">{{ item.platform_name }}</span>
+        <span class="manual-entry-title">{{ item.title }}</span>
+        <span class="text-muted text-sm">{{ item.planned_at[:10] }}</span>
+        {% if item.published_url %}
+        <a href="{{ item.published_url }}" target="_blank" class="text-sm" style="color:var(--accent2);">↗ ссылка</a>
+        {% endif %}
+    </div>
+    <form method="post"
+          action="/analytics/metrics/{{ item.schedule_id }}?project_id={{ selected_project }}&days={{ days }}">
+        <div class="manual-form-row">
+            <div>
+                <label>Просмотры</label>
+                <input type="number" name="views" value="{{ item.views }}"
+                       min="0" class="num-input" />
+            </div>
+            <div>
+                <label>Лайки</label>
+                <input type="number" name="likes" value="{{ item.likes }}"
+                       min="0" class="num-input" />
+            </div>
+            <div>
+                <label>Комментарии</label>
+                <input type="number" name="comments" value="{{ item.comments }}"
+                       min="0" class="num-input" />
+            </div>
+            <div>
+                <label>Репосты</label>
+                <input type="number" name="shares" value="{{ item.shares }}"
+                       min="0" class="num-input" />
+            </div>
+            <div>
+                <label>Watch % (видео)</label>
+                <input type="number" name="watch_pct" value="{{ item.watch_pct }}"
+                       min="0" max="100" step="0.1" class="num-input" />
+            </div>
+            <div>
+                <label>&nbsp;</label>
+                <button type="submit" class="btn btn-primary btn-sm" style="width:100%;">Сохранить</button>
+            </div>
+        </div>
+    </form>
+</div>
+{% endfor %}
+{% else %}
+<div class="card">
+    <p class="text-muted text-sm">Нет опубликованных материалов за выбранный период.</p>
+</div>
+{% endif %}
+
+<script>
+(function() {
+    const d = {{ chart_data | tojson }};
+
+    const commonOptions = {
+        responsive: true,
+        plugins: { legend: { labels: { color: '#e2e8f0', font: { size: 12 } } } },
+        scales: {
+            x: { ticks: { color: '#94a3b8', maxTicksLimit: 10 }, grid: { color: '#2e3347' } },
+            y: { ticks: { color: '#94a3b8' }, grid: { color: '#2e3347' }, beginAtZero: true }
+        }
+    };
+
+    // Линейный график: динамика просмотров
+    const lineCtx = document.getElementById('lineChart').getContext('2d');
+    new Chart(lineCtx, {
+        type: 'line',
+        data: { labels: d.labels, datasets: d.line_datasets },
+        options: commonOptions
+    });
+
+    // Bar-график: средние просмотры по платформам
+    const barCtx = document.getElementById('barChart').getContext('2d');
+    new Chart(barCtx, {
+        type: 'bar',
+        data: {
+            labels: d.bar_labels,
+            datasets: [{
+                label: 'Среднее просмотров',
+                data: d.bar_data,
+                backgroundColor: d.bar_colors.map(c => c + 'aa'),
+                borderColor: d.bar_colors,
+                borderWidth: 1
+            }]
+        },
+        options: {
+            ...commonOptions,
+            plugins: {
+                ...commonOptions.plugins,
+                legend: { display: false }
+            }
+        }
+    });
+})();
+</script>
+{% endblock %}

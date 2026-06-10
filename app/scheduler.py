@@ -5,13 +5,20 @@ APScheduler-планировщик КонтентЗавода.
 
 Джобы:
   - process_due: каждую минуту → обрабатывает просроченные записи расписания.
-  # TODO: сбор метрик публикаций (views, likes, comments) — добавить в волне 4.
+  - process_production: каждую минуту → рендер видео (1 за тик).
+  - rotate_media: ежедневно 04:00 UTC → ротация медиафайлов.
+  - collect_metrics: ежедневно 03:00 UTC → сбор метрик публикаций (VK/YouTube).
+  - analyze_all: еженедельно пн 05:00 UTC → LLM-анализ метрик → learnings.
 """
 import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import app.config as _cfg
+from app.analytics.analyzer import analyze_all
+from app.analytics.collector import collect_metrics
+from app.pipeline.produce import process_production
+from app.services.cleanup import rotate_media
 from app.services.scheduling import process_due
 
 logger = logging.getLogger(__name__)
@@ -46,8 +53,49 @@ def start_scheduler() -> None:
         max_instances=1,  # не запускать параллельно
     )
 
-    # TODO: джоб сбора метрик (волна 4)
-    # _scheduler.add_job(collect_metrics, trigger="interval", hours=1, id="collect_metrics")
+    # Джоб видеопродакшна: каждую минуту, по одному ролику за тик
+    _scheduler.add_job(
+        process_production,
+        trigger="interval",
+        minutes=1,
+        id="process_production",
+        replace_existing=True,
+        max_instances=1,  # рендер тяжёлый — не параллелить
+    )
+
+    # Джоб ротации медиафайлов: ежедневно в 04:00 UTC
+    _scheduler.add_job(
+        rotate_media,
+        trigger="cron",
+        hour=4,
+        minute=0,
+        id="rotate_media",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # Джоб сбора метрик: ежедневно в 03:00 UTC (до ротации медиа в 04:00)
+    _scheduler.add_job(
+        collect_metrics,
+        trigger="cron",
+        hour=3,
+        minute=0,
+        id="collect_metrics",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # Джоб LLM-анализа метрик: еженедельно, понедельник 05:00 UTC
+    _scheduler.add_job(
+        analyze_all,
+        trigger="cron",
+        day_of_week="mon",
+        hour=5,
+        minute=0,
+        id="analyze_all",
+        replace_existing=True,
+        max_instances=1,
+    )
 
     _scheduler.start()
     logger.info("Планировщик запущен (process_due каждую минуту)")

@@ -35,6 +35,16 @@
                     <span class="badge" style="background:var(--bg3);color:var(--text2);">
                         {{ item.type }}
                     </span>
+                    {% if item.status == 'review' %}
+                    <span class="badge" style="background:rgba(34,197,94,.12);color:var(--green);white-space:nowrap;">
+                        видео готово
+                    </span>
+                    {% endif %}
+                    {% if item.produce_error %}
+                    <span class="badge" style="background:rgba(239,68,68,.15);color:var(--red);white-space:nowrap;">
+                        ошибка продакшна
+                    </span>
+                    {% endif %}
                 </div>
                 <div style="font-weight:600;color:var(--text);
                             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">

@@ -138,6 +138,8 @@ CREATE INDEX IF NOT EXISTS idx_content_project      ON content(project_id, statu
 CREATE INDEX IF NOT EXISTS idx_content_updated      ON content(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_schedule_planned     ON schedule(planned_at, status);
 CREATE INDEX IF NOT EXISTS idx_learnings_project    ON learnings(project_id, active);
+-- Один замер метрик на публикацию в день (collector делает INSERT OR REPLACE)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_schedule_date ON metrics(schedule_id, date);
 """
 
 # ─── Соединение ───────────────────────────────────────────────────────────────

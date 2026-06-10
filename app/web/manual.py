@@ -62,7 +62,7 @@ async def manual_list(request: Request):
             text_value = pdata.get("text", "")
             extra = {"title": pdata.get("title", ""), "hashtags": []}
         elif platform == "instagram":
-            text_value = pdata.get("caption", "")
+            text_value = pdata.get("caption", pdata.get("text", ""))
             extra = {"hashtags": pdata.get("hashtags", [])}
         else:
             text_value = pdata.get("text", "")
@@ -78,6 +78,8 @@ async def manual_list(request: Request):
         item["text_value"] = text_value
         item["extra"] = extra
         item["files_parsed"] = files
+        item["content_id"] = item["content_id"]
+        item["has_video"] = bool(files.get("video_path"))
         items.append(item)
 
     flash = request.query_params.get("flash", "")

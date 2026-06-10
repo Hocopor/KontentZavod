@@ -5,7 +5,9 @@ Credentials JSON: {"bot_token": "..."}
 Config JSON:      {"channel_id": "@mychannel" или "-100..."}
 
 Текст берётся из texts["telegram"]["text"] + hashtags.
-При наличии files["preview_path"] отправляет sendPhoto, иначе sendMessage.
+При наличии files["video_path"] отправляет sendVideo (приоритет над preview_path).
+При наличии files["preview_path"] (без видео) отправляет sendPhoto.
+Иначе sendMessage.
 """
 import logging
 from pathlib import Path
@@ -27,7 +29,7 @@ def publish_telegram(
     files: dict,
     dry_run: bool,
 ) -> str:
-    """Опубликовать пост в Telegram-канал."""
+    """Опубликовать пост, фото или видео в Telegram-канал."""
 
     channel_id = config.get("channel_id", "")
     tg_texts = texts.get("telegram", {})
@@ -39,9 +41,12 @@ def publish_telegram(
     if hashtags:
         full_text = f"{text_body}\n\n{' '.join(hashtags)}"
 
-    # Файл-картинка (необязательно)
+    # Определяем тип вложения (видео имеет приоритет)
+    video_path: str | None = files.get("video_path") or None
     preview_path: str | None = files.get("preview_path")
-    has_image = bool(preview_path and Path(preview_path).exists())
+
+    has_video = bool(video_path)
+    has_image = bool(preview_path and Path(preview_path).exists()) if not has_video else False
 
     if dry_run:
         payload: dict = {
@@ -51,7 +56,10 @@ def publish_telegram(
             "text": full_text,
             "hashtags": hashtags,
         }
-        if has_image:
+        if has_video:
+            payload["method"] = "sendVideo"
+            payload["video_path"] = video_path
+        elif has_image:
             payload["method"] = "sendPhoto"
             payload["photo_path"] = preview_path
         else:
@@ -66,7 +74,18 @@ def publish_telegram(
         raise PublishError("Telegram: channel_id не задан в config")
 
     try:
-        if has_image:
+        if has_video:
+            if not Path(video_path).exists():  # type: ignore[arg-type]
+                raise PublishError(f"Telegram: видео-файл не найден: {video_path}")
+            url = TELEGRAM_API.format(token=bot_token, method="sendVideo")
+            with open(video_path, "rb") as vf:  # type: ignore[arg-type]
+                resp = httpx.post(
+                    url,
+                    data={"chat_id": channel_id, "caption": full_text, "supports_streaming": "1"},
+                    files={"video": vf},
+                    timeout=120,
+                )
+        elif has_image:
             url = TELEGRAM_API.format(token=bot_token, method="sendPhoto")
             with open(preview_path, "rb") as img:  # type: ignore[arg-type]
                 resp = httpx.post(
@@ -82,6 +101,8 @@ def publish_telegram(
                 json={"chat_id": channel_id, "text": full_text, "parse_mode": "HTML"},
                 timeout=30,
             )
+    except PublishError:
+        raise
     except httpx.HTTPError as exc:
         raise PublishError(f"Telegram: сетевая ошибка — {exc}") from exc
 

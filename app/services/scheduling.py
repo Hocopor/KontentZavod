@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from app.db import get_db
-from app.publishers.base import PublishError, publish
+from app.publishers.base import PublishDeferred, PublishError, publish
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +151,27 @@ def process_due(now: datetime | None = None) -> None:
                     (published_url, schedule_id),
                 )
             logger.info("Опубликовано: schedule_id=%s url=%s", schedule_id, published_url)
+
+        except PublishDeferred as exc:
+            # Отложено (квота и т.п.) — переносим без увеличения attempts
+            retry_str = exc.retry_at.strftime("%Y-%m-%d %H:%M:%S")
+            with get_db() as db:
+                db.execute(
+                    """
+                    UPDATE schedule
+                       SET status     = 'planned',
+                           planned_at = ?,
+                           updated_at = datetime('now')
+                     WHERE id = ?
+                    """,
+                    (retry_str, schedule_id),
+                )
+            logger.info(
+                "Публикация отложена schedule_id=%s до %s: %s",
+                schedule_id,
+                retry_str,
+                exc,
+            )
 
         except PublishError as exc:
             new_attempts = attempts + 1

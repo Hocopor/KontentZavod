@@ -44,7 +44,7 @@
             </div>
         </div>
         {% if idea.status == 'new' %}
-        <div class="flex gap-sm" style="flex-shrink:0;">
+        <div class="flex gap-sm" style="flex-shrink:0; flex-wrap:wrap;">
             <button class="btn btn-primary btn-sm"
                     hx-post="/ideas/{{ idea.id }}/script"
                     hx-target="#ideas-list"
@@ -52,6 +52,30 @@
                     hx-indicator="#ideas-spinner"
                     onclick="this.disabled=true; this.textContent='Генерирую…'">
                 Сделать пост
+            </button>
+            <button class="btn btn-secondary btn-sm"
+                    hx-post="/ideas/{{ idea.id }}/script_ab"
+                    hx-target="#ideas-list"
+                    hx-swap="innerHTML"
+                    hx-indicator="#ideas-spinner"
+                    onclick="this.disabled=true; this.textContent='Генерирую…'">
+                A/B пост
+            </button>
+            <button class="btn btn-secondary btn-sm"
+                    hx-post="/ideas/{{ idea.id }}/video_footage"
+                    hx-target="#ideas-list"
+                    hx-swap="innerHTML"
+                    hx-indicator="#ideas-spinner"
+                    onclick="this.disabled=true; this.textContent='Генерирую…'">
+                🎬 Футажи
+            </button>
+            <button class="btn btn-secondary btn-sm"
+                    hx-post="/ideas/{{ idea.id }}/video_slideshow"
+                    hx-target="#ideas-list"
+                    hx-swap="innerHTML"
+                    hx-indicator="#ideas-spinner"
+                    onclick="this.disabled=true; this.textContent='Генерирую…'">
+                🎬 Слайдшоу
             </button>
             <button class="btn btn-secondary btn-sm"
                     hx-post="/ideas/{{ idea.id }}/reject"

@@ -18,6 +18,8 @@ from app.web.generate import router as generate_router
 from app.web.review import router as review_router
 from app.web.calendar import router as calendar_router
 from app.web.manual import router as manual_router
+from app.web.files import router as files_router
+from app.web.analytics import router as analytics_router
 
 
 @asynccontextmanager
@@ -55,6 +57,8 @@ def create_app() -> FastAPI:
     app.include_router(review_router)
     app.include_router(calendar_router)
     app.include_router(manual_router)
+    app.include_router(files_router)
+    app.include_router(analytics_router)
 
     return app
 
