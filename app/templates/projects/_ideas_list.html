@@ -4,7 +4,7 @@
 {% endif %}
 
 <!-- Бейдж черновиков -->
-{% if draft_count > 0 %}
+{% if (draft_count | default(0)) > 0 %}
 <div class="alert alert-info mb-2" style="font-size:.88rem;">
     📝 Черновиков, ожидающих ревью: <strong>{{ draft_count }}</strong>
 </div>

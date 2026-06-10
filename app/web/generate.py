@@ -8,21 +8,19 @@
     POST /ideas/{idea_id}/reject          — отклонить идею
 """
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 
 from app.db import get_db
 from app.llm import LLMError
 from app.pipeline.ideas import generate_ideas
 from app.pipeline.script import generate_script
+from app.templates_env import templates
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 
 # ─── Утилиты ──────────────────────────────────────────────────────────────────

@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+
+{% block title %}Ревью: {{ content.title or 'Без заголовка' }} — КонтентЗавод{% endblock %}
+
+{% block head %}
+<style>
+.platform-block { margin-bottom: 1.5rem; }
+.char-counter { font-size: .78rem; color: var(--text2); margin-top: .25rem; }
+.char-counter.over { color: var(--red); font-weight: 600; }
+.feature-badge {
+    display: inline-block;
+    padding: .2rem .6rem;
+    border-radius: 999px;
+    font-size: .75rem;
+    background: var(--bg3);
+    color: var(--text2);
+    border: 1px solid var(--border);
+    margin-right: .3rem;
+    margin-bottom: .3rem;
+}
+.modal-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.6);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+}
+.modal-overlay.active { display: flex; }
+.modal-box {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    width: 100%;
+    max-width: 480px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.5);
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="flex-center gap-md mb-2" style="justify-content:space-between;flex-wrap:wrap;">
+    <div>
+        <div class="flex-center gap-sm mb-1">
+            <a href="/review" class="btn btn-secondary btn-sm">← Назад</a>
+            <span class="badge" style="background:rgba(108,99,255,.15);color:var(--accent2);">
+                {{ content.project_name }}
+            </span>
+        </div>
+        <h1 style="margin-bottom:0;">
+            {{ content.title or 'Без заголовка' }}
+        </h1>
+        <div class="text-muted text-sm mt-1">
+            Тип: {{ content.type }} · Обновлён: {{ content.updated_at[:16] if content.updated_at else '—' }}
+        </div>
+    </div>
+</div>
+
+{% if flash %}
+<div class="alert alert-success">{{ flash }}</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+<!-- Характеристики -->
+{% if features %}
+<div class="card mb-2">
+    <h3 style="margin-bottom:.75rem;">Характеристики</h3>
+    <div>
+        {% if features.hook_type %}<span class="feature-badge">Хук: {{ features.hook_type }}</span>{% endif %}
+        {% if features.topic %}<span class="feature-badge">{{ features.topic }}</span>{% endif %}
+        {% if features.length %}<span class="feature-badge">Длина: {{ features.length }}</span>{% endif %}
+        {% if features.format %}<span class="feature-badge">Формат: {{ features.format }}</span>{% endif %}
+        {% if features.ab_variant and features.ab_variant != 'null' %}
+        <span class="feature-badge" style="background:rgba(245,158,11,.1);color:var(--yellow);">
+            Вариант {{ features.ab_variant }}
+        </span>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Тексты по площадкам -->
+<form method="post" action="/review/{{ content.id }}/save" id="save-form">
+<div class="card mb-2">
+    <h2>Тексты по площадкам</h2>
+    {% for pdata in platform_data %}
+    <div class="platform-block">
+        <label for="text_{{ pdata.platform }}">
+            <strong>{{ pdata.name }}</strong>
+            <span class="text-muted" style="font-weight:400;"> — лимит {{ pdata.limit }} симв.</span>
+        </label>
+        <textarea
+            id="text_{{ pdata.platform }}"
+            name="text_{{ pdata.platform }}"
+            rows="5"
+            data-limit="{{ pdata.limit }}"
+            oninput="updateCounter(this)"
+        >{{ pdata.text }}</textarea>
+        <div class="char-counter" id="counter_{{ pdata.platform }}">
+            {{ pdata.text | length }} / {{ pdata.limit }}
+        </div>
+        {% if pdata.raw.get('hashtags') %}
+        <div class="text-sm text-muted mt-1">
+            Хэштеги: {{ pdata.raw.hashtags | join(' ') }}
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+<button type="submit" class="btn btn-secondary mb-2">Сохранить правки</button>
+</form>
+
+<!-- Одобрение + планирование -->
+<div class="card mb-2">
+    <h2>Одобрить</h2>
+    <form method="post" action="/review/{{ content.id }}/approve" id="approve-form">
+        <p class="text-sm text-muted mb-2">
+            Выберите площадки для немедленного планирования (необязательно — запланировать можно позже из календаря).
+        </p>
+        {% set tomorrow_base = default_dt %}
+        {% for pdata in platform_data %}
+        <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:.5rem;min-width:160px;cursor:pointer;margin:0;">
+                <input type="checkbox" name="schedule_{{ pdata.platform }}" value="1"
+                       style="width:16px;height:16px;accent-color:var(--accent);">
+                <span>{{ pdata.name }}</span>
+            </label>
+            <input type="datetime-local"
+                   name="planned_at_{{ pdata.platform }}"
+                   value="{{ default_dt }}"
+                   style="width:auto;font-size:.88rem;padding:.3rem .6rem;">
+        </div>
+        {% endfor %}
+        <div class="flex gap-sm mt-2">
+            <button type="submit" class="btn btn-success">Одобрить</button>
+        </div>
+    </form>
+</div>
+
+<!-- Отклонение -->
+<div class="card">
+    <h2>Отклонить</h2>
+    <button type="button" class="btn btn-danger btn-sm"
+            onclick="document.getElementById('reject-modal').classList.add('active')">
+        Отклонить черновик
+    </button>
+</div>
+
+<!-- Модал отклонения -->
+<div class="modal-overlay" id="reject-modal">
+    <div class="modal-box">
+        <h2 style="margin-bottom:1rem;">Причина отклонения</h2>
+        <form method="post" action="/review/{{ content.id }}/reject">
+            <div class="form-group">
+                <label for="reject-reason">Причина (обязательно)</label>
+                <textarea id="reject-reason" name="reason" rows="3"
+                          placeholder="Опишите, что не так с контентом…"
+                          required></textarea>
+            </div>
+            <div class="flex gap-sm">
+                <button type="submit" class="btn btn-danger">Отклонить</button>
+                <button type="button" class="btn btn-secondary"
+                        onclick="document.getElementById('reject-modal').classList.remove('active')">
+                    Отмена
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function updateCounter(textarea) {
+    var len = textarea.value.length;
+    var limit = parseInt(textarea.dataset.limit);
+    var id = textarea.id.replace('text_', 'counter_');
+    var el = document.getElementById(id);
+    if (el) {
+        el.textContent = len + ' / ' + limit;
+        el.className = 'char-counter' + (len > limit ? ' over' : '');
+    }
+}
+// Инициализация счётчиков при загрузке
+document.querySelectorAll('textarea[data-limit]').forEach(function(ta) {
+    updateCounter(ta);
+});
+</script>
+{% endblock %}

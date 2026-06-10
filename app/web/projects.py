@@ -16,17 +16,15 @@ CRUD проектов и площадок.
 import json
 import re
 import unicodedata
-from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 
 from app.db import get_db
 from app.security import encrypt, decrypt
+from app.templates_env import templates
 
 router = APIRouter(prefix="/projects")
-templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 PLATFORMS = ("telegram", "vk", "youtube", "instagram", "dzen")
 
@@ -210,32 +208,36 @@ async def project_new_save(
     return RedirectResponse(f"/projects/{slug}", status_code=303)
 
 
-# ─── Детальная страница ───────────────────────────────────────────────────────
+# ─── Хелпер: контекст детальной страницы ─────────────────────────────────────
 
 
-@router.get("/{slug}", response_class=HTMLResponse)
-async def project_detail(request: Request, slug: str):
+def _build_detail_context(slug: str) -> dict | None:
+    """
+    Собирает полный контекст для рендера projects/detail.html.
+    Возвращает None, если проект не найден.
+    Используется во ВСЕХ путях рендера detail.html (GET, 409-ошибка удаления и др.)
+    чтобы шаблон всегда получал одинаковый набор переменных.
+    """
     with get_db() as db:
         project = db.execute(
             "SELECT * FROM projects WHERE slug=?", (slug,)
         ).fetchone()
         if project is None:
-            return HTMLResponse("Проект не найден", status_code=404)
-
-        platforms = db.execute(
-            "SELECT * FROM project_platforms WHERE project_id=? ORDER BY platform",
-            (project["id"],),
-        ).fetchall()
+            return None
 
         # Убедиться, что все 5 площадок есть
-        existing = {pl["platform"] for pl in platforms}
+        existing_platforms = db.execute(
+            "SELECT platform FROM project_platforms WHERE project_id=?",
+            (project["id"],),
+        ).fetchall()
+        existing = {pl["platform"] for pl in existing_platforms}
         for p in PLATFORMS:
             if p not in existing:
                 db.execute(
                     "INSERT OR IGNORE INTO project_platforms (project_id, platform) VALUES (?,?)",
                     (project["id"], p),
                 )
-        # Перезагрузить после возможной вставки
+
         platforms = db.execute(
             "SELECT * FROM project_platforms WHERE project_id=? ORDER BY platform",
             (project["id"],),
@@ -263,7 +265,6 @@ async def project_detail(request: Request, slug: str):
         pl_dict = dict(pl)
         pl_dict["display_name"] = _platform_display_name(pl_dict["platform"])
         pl_dict["has_credentials"] = bool(pl_dict.get("credentials"))
-        # Конфиг — декодируем JSON для отображения в форме
         cfg = pl_dict.get("config")
         if cfg:
             try:
@@ -274,18 +275,26 @@ async def project_detail(request: Request, slug: str):
             pl_dict["config_parsed"] = {}
         platform_data.append(pl_dict)
 
-    return templates.TemplateResponse(
-        request,
-        "projects/detail.html",
-        {
-            "project": project_dict,
-            "platforms": platform_data,
-            "completeness": completeness,
-            "content_count": content_count,
-            "ideas": [dict(i) for i in ideas],
-            "draft_count": draft_count,
-        },
-    )
+    return {
+        "project": project_dict,
+        "platforms": platform_data,
+        "completeness": completeness,
+        "content_count": content_count,
+        "ideas": [dict(i) for i in ideas],
+        "draft_count": draft_count,
+    }
+
+
+# ─── Детальная страница ───────────────────────────────────────────────────────
+
+
+@router.get("/{slug}", response_class=HTMLResponse)
+async def project_detail(request: Request, slug: str):
+    ctx = _build_detail_context(slug)
+    if ctx is None:
+        return HTMLResponse("Проект не найден", status_code=404)
+
+    return templates.TemplateResponse(request, "projects/detail.html", ctx)
 
 
 # ─── Редактирование профиля ───────────────────────────────────────────────────
@@ -405,21 +414,17 @@ async def project_delete(request: Request, slug: str):
         ).fetchone()[0]
 
         if content_count > 0:
+            ctx = _build_detail_context(slug)
+            if ctx is None:
+                return HTMLResponse("Проект не найден", status_code=404)
+            ctx["delete_error"] = (
+                f"Нельзя удалить проект: у него есть {content_count} ед. контента. "
+                "Сначала заархивируйте проект."
+            )
             return templates.TemplateResponse(
                 request,
                 "projects/detail.html",
-                {
-                    "project": dict(
-                        db.execute("SELECT * FROM projects WHERE slug=?", (slug,)).fetchone()
-                    ),
-                    "platforms": [],
-                    "completeness": 0,
-                    "content_count": content_count,
-                    "delete_error": (
-                        f"Нельзя удалить проект: у него есть {content_count} ед. контента. "
-                        "Сначала заархивируйте проект."
-                    ),
-                },
+                ctx,
                 status_code=409,
             )
 

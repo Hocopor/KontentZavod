@@ -29,9 +29,8 @@ def patch_env(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_ROUTER_KEY", "test-key")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
-    # Принудительно сбросить синглтон settings после подмены env
-    import app.config as cfg_module
-    cfg_module.settings = cfg_module.Settings()
+    # Settings теперь читает os.environ через @property при каждом обращении,
+    # поэтому monkeypatch.setenv выше достаточно — пересоздавать Settings не нужно.
 
     yield
 

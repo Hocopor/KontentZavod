@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+
+{% block title %}Календарь — {{ month_name }} {{ year }} — КонтентЗавод{% endblock %}
+
+{% block head %}
+<style>
+.cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+    margin-bottom: 1.5rem;
+}
+.cal-header {
+    text-align: center;
+    font-size: .78rem;
+    font-weight: 600;
+    color: var(--text2);
+    padding: .5rem .25rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+}
+.cal-cell {
+    min-height: 90px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: .4rem .4rem .3rem;
+    vertical-align: top;
+}
+.cal-cell.other-month { opacity: .35; }
+.cal-cell.today { border-color: var(--accent); }
+.cal-day-num {
+    font-size: .8rem;
+    color: var(--text2);
+    font-weight: 600;
+    margin-bottom: .35rem;
+}
+.cal-cell.today .cal-day-num { color: var(--accent2); }
+.cal-entry {
+    display: block;
+    font-size: .72rem;
+    padding: .15rem .35rem;
+    border-radius: 3px;
+    margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-decoration: none;
+    color: var(--bg);
+    font-weight: 600;
+    transition: opacity .1s;
+}
+.cal-entry:hover { opacity: .8; }
+.legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1rem;
+    margin-bottom: 1.5rem;
+    font-size: .8rem;
+}
+.legend-item { display: flex; align-items: center; gap: .4rem; }
+.legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.sidebar { min-width: 220px; }
+</style>
+{% endblock %}
+
+{% block content %}
+{% if flash %}
+<div class="alert alert-success">{{ flash }}</div>
+{% endif %}
+
+<div style="display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap;">
+<div style="flex:1;min-width:0;">
+
+<!-- Навигация -->
+<div class="flex-center gap-md mb-2" style="justify-content:space-between;flex-wrap:wrap;">
+    <div class="flex-center gap-sm">
+        <a href="/calendar?year={{ prev_year }}&month={{ prev_month }}" class="btn btn-secondary btn-sm">←</a>
+        <h1 style="margin-bottom:0;">{{ month_name }} {{ year }}</h1>
+        <a href="/calendar?year={{ next_year }}&month={{ next_month }}" class="btn btn-secondary btn-sm">→</a>
+    </div>
+    <div class="flex gap-sm">
+        <a href="/calendar?view=week" class="btn btn-secondary btn-sm">Неделя</a>
+        <a href="/calendar?year={{ today.year }}&month={{ today.month }}" class="btn btn-secondary btn-sm">Сегодня</a>
+    </div>
+</div>
+
+<!-- Легенда -->
+<div class="legend">
+    {% for status, color in status_colors.items() %}
+    <div class="legend-item">
+        <div class="legend-dot" style="background:{{ color }};"></div>
+        <span class="text-muted">{{ status_labels[status] }}</span>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Сетка -->
+<div class="cal-grid">
+    {% for wd in ru_weekdays %}
+    <div class="cal-header">{{ wd }}</div>
+    {% endfor %}
+
+    {% for week in cal %}
+    {% for day in week %}
+    {% if day == 0 %}
+    <div class="cal-cell other-month"></div>
+    {% else %}
+    {% set is_today = (day == today.day and month == today.month and year == today.year) %}
+    <div class="cal-cell{% if is_today %} today{% endif %}">
+        <div class="cal-day-num">{{ day }}</div>
+        {% for entry in days_map.get(day, []) %}
+        <a href="/calendar/entry/{{ entry.id }}" class="cal-entry"
+           style="background:{{ entry.color }};"
+           title="{{ entry.status_label }}: {{ entry.project_name }} / {{ entry.platform }} — {{ entry.title_short }}">
+            {{ entry.platform_short }} {{ entry.planned_at[11:16] }} {{ entry.title_short }}
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% endfor %}
+</div>
+
+</div><!-- /main -->
+
+<!-- Боковая панель -->
+<div class="sidebar">
+    {% if unscheduled %}
+    <div class="card">
+        <h3 style="margin-bottom:.75rem;">Готово к планированию</h3>
+        {% for item in unscheduled %}
+        <div style="margin-bottom:.75rem;padding-bottom:.75rem;border-bottom:1px solid var(--border);">
+            <div class="text-sm" style="font-weight:600;margin-bottom:.2rem;">
+                {{ item.title or 'Без заголовка' }}
+            </div>
+            <div class="text-sm text-muted">{{ item.project_name }}</div>
+            <a href="/review/{{ item.id }}" class="btn btn-primary btn-sm mt-1"
+               style="font-size:.75rem;">Запланировать</a>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="card">
+        <p class="text-sm text-muted">Нет контента, ожидающего планирования.</p>
+    </div>
+    {% endif %}
+</div>
+
+</div><!-- /flex -->
+{% endblock %}

@@ -7,33 +7,75 @@
 
 <div class="stats-grid">
     <div class="stat-card">
-        <div class="stat-num">{{ projects_total }}</div>
-        <div class="stat-label">Активных проектов</div>
+        <a href="/projects" style="text-decoration:none;">
+            <div class="stat-num">{{ projects_total }}</div>
+            <div class="stat-label">Активных проектов</div>
+        </a>
     </div>
     <div class="stat-card">
-        <div class="stat-num">{{ drafts_total }}</div>
-        <div class="stat-label">На ревью</div>
+        <a href="/review" style="text-decoration:none;">
+            <div class="stat-num" style="{% if review_count > 0 %}color:var(--yellow);{% endif %}">{{ review_count }}</div>
+            <div class="stat-label">На ревью</div>
+        </a>
     </div>
     <div class="stat-card">
-        <div class="stat-num">{{ errors_total }}</div>
-        <div class="stat-label">Ошибок публикации</div>
+        <a href="/calendar" style="text-decoration:none;">
+            <div class="stat-num" style="{% if approved_unscheduled > 0 %}color:var(--accent2);{% endif %}">{{ approved_unscheduled }}</div>
+            <div class="stat-label">Готово к планированию</div>
+        </a>
+    </div>
+    <div class="stat-card">
+        <a href="/calendar" style="text-decoration:none;">
+            <div class="stat-num">{{ scheduled_7d }}</div>
+            <div class="stat-label">Запланировано (7 дней)</div>
+        </a>
+    </div>
+    <div class="stat-card">
+        <a href="/calendar" style="text-decoration:none;">
+            <div class="stat-num" style="{% if errors_total > 0 %}color:var(--red);{% endif %}">{{ errors_total }}</div>
+            <div class="stat-label">Ошибок публикации</div>
+        </a>
+    </div>
+    <div class="stat-card">
+        <a href="/manual" style="text-decoration:none;">
+            <div class="stat-num" style="{% if manual_count > 0 %}color:#f97316;{% endif %}">{{ manual_count }}</div>
+            <div class="stat-label">В ручной очереди</div>
+        </a>
     </div>
 </div>
 
+{% if last_errors %}
 <div class="card">
-    <h2>Очередь генерации</h2>
-    <p class="text-muted text-sm mt-1">Будет доступна в Волне 2 — после настройки проектов.</p>
+    <h2>Последние ошибки публикации</h2>
+    <div style="display:grid;gap:.5rem;margin-top:.75rem;">
+        {% for e in last_errors %}
+        <div style="display:flex;align-items:flex-start;gap:.75rem;padding:.6rem .75rem;
+                    background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.25);
+                    border-radius:var(--radius);">
+            <div style="flex:1;min-width:0;">
+                <div class="flex-center gap-sm mb-1" style="flex-wrap:wrap;">
+                    <span class="badge" style="background:rgba(108,99,255,.15);color:var(--accent2);">
+                        {{ e.project_name }}
+                    </span>
+                    <span class="badge" style="background:var(--bg3);color:var(--text2);">{{ e.platform }}</span>
+                    <span class="text-sm text-muted">{{ e.updated_at[:16] if e.updated_at else '—' }}</span>
+                </div>
+                <div class="text-sm" style="color:#fca5a5;word-break:break-word;">
+                    {{ e.error_text or 'Нет описания ошибки' }}
+                </div>
+            </div>
+            <a href="/calendar/entry/{{ e.id }}" class="btn btn-secondary btn-sm"
+               style="white-space:nowrap;flex-shrink:0;">Детали</a>
+        </div>
+        {% endfor %}
+    </div>
 </div>
-
-<div class="card mt-2">
-    <h2>Календарь публикаций</h2>
-    <p class="text-muted text-sm mt-1">Будет доступен в Волне 2 вместе с планировщиком.</p>
-</div>
+{% endif %}
 
 {% if projects_total == 0 %}
 <div class="alert alert-info mt-2">
     Начните с создания первого проекта —
-    <a href="/projects/new" style="color: var(--accent2); font-weight: 600;">добавить проект</a>.
+    <a href="/projects/new" style="color:var(--accent2);font-weight:600;">добавить проект</a>.
 </div>
 {% endif %}
 {% endblock %}

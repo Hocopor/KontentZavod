@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}Ревью черновиков — КонтентЗавод{% endblock %}
+
+{% block content %}
+<div class="flex-center gap-md mb-2" style="justify-content:space-between;flex-wrap:wrap;">
+    <h1 style="margin-bottom:0;">Очередь ревью</h1>
+    <form method="get" action="/review" class="flex-center gap-sm">
+        <select name="project_id" onchange="this.form.submit()"
+                style="width:auto;padding:.35rem .7rem;font-size:.88rem;">
+            <option value="">— Все проекты —</option>
+            {% for p in projects %}
+            <option value="{{ p.id }}" {% if selected_project == p.id|string %}selected{% endif %}>
+                {{ p.name }}
+            </option>
+            {% endfor %}
+        </select>
+    </form>
+</div>
+
+{% if items %}
+<div style="display:grid;gap:.75rem;">
+    {% for item in items %}
+    <a href="/review/{{ item.id }}" style="text-decoration:none;">
+        <div class="card" style="display:flex;align-items:center;gap:1rem;cursor:pointer;
+                                 transition:border-color .15s;"
+             onmouseover="this.style.borderColor='var(--accent)'"
+             onmouseout="this.style.borderColor='var(--border)'">
+            <div style="flex:1;min-width:0;">
+                <div class="flex-center gap-sm mb-1">
+                    <span class="badge" style="background:rgba(108,99,255,.15);color:var(--accent2);
+                                               white-space:nowrap;">
+                        {{ item.project_name }}
+                    </span>
+                    <span class="badge" style="background:var(--bg3);color:var(--text2);">
+                        {{ item.type }}
+                    </span>
+                </div>
+                <div style="font-weight:600;color:var(--text);
+                            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                    {% if item.title %}{{ item.title }}{% else %}<span class="text-muted">Без заголовка</span>{% endif %}
+                </div>
+                <div class="text-sm text-muted mt-1">
+                    Обновлён: {{ item.updated_at[:16] if item.updated_at else '—' }}
+                </div>
+            </div>
+            <div class="btn btn-primary btn-sm" style="white-space:nowrap;">Ревью →</div>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="card">
+    <p class="text-muted text-sm">
+        {% if selected_project %}Нет черновиков для выбранного проекта.
+        {% else %}Нет черновиков на ревью — всё чисто!{% endif %}
+    </p>
+</div>
+{% endif %}
+{% endblock %}

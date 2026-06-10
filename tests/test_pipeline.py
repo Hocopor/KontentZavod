@@ -11,17 +11,14 @@ from app.llm import LLMError
 import app.config as cfg_module
 
 
-# ─── Фикстура: патч FAKE_LLM в app.llm.settings ──────────────────────────────
+# ─── Примечание о FAKE_LLM ────────────────────────────────────────────────────
 #
-# conftest.patch_env заменяет cfg_module.settings, но app.llm уже импортировал
-# settings как модульную переменную. Дополнительный патч синхронизирует их.
-
-
-@pytest.fixture(autouse=True)
-def patch_llm_settings(patch_env, monkeypatch):
-    """Синхронизировать app.llm.settings с обновлённым cfg_module.settings."""
-    import app.llm as llm_module
-    monkeypatch.setattr(llm_module, "settings", cfg_module.settings)
+# config.Settings теперь читает os.environ через @property при каждом обращении.
+# monkeypatch.setenv("FAKE_LLM", "1") из conftest.patch_env (autouse=True)
+# достаточно — все модули (llm, db и др.), держащие ссылку на singleton settings,
+# автоматически видят актуальное значение без дополнительного патчинга.
+#
+# Фикстура ensure_fake_llm больше не нужна и удалена.
 
 
 # ─── Вспомогательные фикстуры ─────────────────────────────────────────────────

@@ -282,9 +282,31 @@
 <body>
     <nav>
         <a href="/" class="nav-brand">⚙️ КонтентЗавод</a>
+        {% set _nav = get_nav_counts() %}
         <div class="nav-links">
             <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Главная</a>
             <a href="/projects" {% if request.url.path.startswith("/projects") %}class="active"{% endif %}>Проекты</a>
+            <a href="/review" {% if request.url.path.startswith("/review") %}class="active"{% endif %}
+               style="display:inline-flex;align-items:center;gap:.35rem;">
+                Ревью
+                {% if _nav.nav_review_count > 0 %}
+                <span style="background:var(--yellow);color:#000;border-radius:999px;
+                             font-size:.7rem;font-weight:700;padding:.05rem .4rem;line-height:1.4;">
+                    {{ _nav.nav_review_count }}
+                </span>
+                {% endif %}
+            </a>
+            <a href="/calendar" {% if request.url.path.startswith("/calendar") %}class="active"{% endif %}>Календарь</a>
+            <a href="/manual" {% if request.url.path.startswith("/manual") %}class="active"{% endif %}
+               style="display:inline-flex;align-items:center;gap:.35rem;">
+                Ручная очередь
+                {% if _nav.nav_manual_count > 0 %}
+                <span style="background:#f97316;color:#fff;border-radius:999px;
+                             font-size:.7rem;font-weight:700;padding:.05rem .4rem;line-height:1.4;">
+                    {{ _nav.nav_manual_count }}
+                </span>
+                {% endif %}
+            </a>
         </div>
     </nav>
     <main>
