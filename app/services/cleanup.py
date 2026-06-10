@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 
 from app.config import settings
-from app.db import get_db
+from app.db import get_db, get_project_settings
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +67,13 @@ def rotate_media() -> dict:
     orphan_count = 0
 
     # ── (а) Устаревший опубликованный контент ─────────────────────────────────
+    # Загружаем контент без фильтра по retention_days (у каждого проекта свой срок)
     with get_db() as db:
-        # Контент, у которого все schedule published/manual_done
-        # и самая свежая updated_at старше retention_days
         rows = db.execute(
             """
             SELECT c.id,
                    c.files,
+                   c.project_id,
                    COUNT(s.id)                    AS sched_count,
                    SUM(CASE WHEN s.status IN ('published', 'manual_done') THEN 1 ELSE 0 END)
                                                   AS done_count,
@@ -83,10 +83,37 @@ def rotate_media() -> dict:
              GROUP BY c.id
             HAVING sched_count > 0
                AND sched_count = done_count
-               AND last_updated < datetime('now', '-' || ? || ' days')
             """,
-            (retention_days,),
         ).fetchall()
+
+        # Кэш настроек проектов (project_id → retention_days)
+        _project_settings_cache: dict[int, int] = {}
+        for row in rows:
+            pid = row["project_id"]
+            if pid not in _project_settings_cache:
+                proj_row = db.execute(
+                    "SELECT settings FROM projects WHERE id=?", (pid,)
+                ).fetchone()
+                proj_settings_json = proj_row["settings"] if proj_row else None
+                ps = get_project_settings(proj_settings_json)
+                _project_settings_cache[pid] = int(ps.get("retention_days", retention_days))
+
+    # Фильтрация по per-project retention_days
+    from datetime import datetime as _dt
+    _now = _dt.utcnow()
+
+    def _is_expired(row) -> bool:
+        proj_retention = _project_settings_cache.get(row["project_id"], retention_days)
+        last_updated = row["last_updated"]
+        if not last_updated:
+            return False
+        try:
+            last_dt = _dt.fromisoformat(last_updated)
+        except (ValueError, TypeError):
+            return False
+        return (_now - last_dt).days >= proj_retention
+
+    rows = [r for r in rows if _is_expired(r)]
 
     for row in rows:
         content_id: int = row["id"]

@@ -1,0 +1,125 @@
+{#
+    Фрагмент модалки пункта плана.
+    Контекст: item (dict с brief_parsed, status_label, type_label, platform_label), error.
+    Используется через HTMX hx-get=/plan/item/{id} → hx-target=#modal-content.
+#}
+<div style="margin-bottom:1rem;">
+    <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.5rem;">
+        <span class="badge" style="background:var(--bg3);color:var(--text2);">
+            {{ item.platform_label }}
+        </span>
+        <span class="badge" style="background:var(--bg3);color:var(--text2);">
+            {{ item.type_label }}
+        </span>
+        <span style="display:inline-block;padding:.15rem .5rem;border-radius:999px;font-size:.75rem;
+                     font-weight:600;background:{{ item.status_color }}22;
+                     color:{{ item.status_color }};border:1px solid {{ item.status_color }}44;">
+            {{ item.status_label }}
+        </span>
+    </div>
+
+    {% if item.error_text %}
+    <div class="alert alert-error" style="font-size:.82rem;">{{ item.error_text }}</div>
+    {% endif %}
+
+    {% if item.status == 'generated' and item.content_id %}
+    <div class="alert alert-info" style="font-size:.82rem;">
+        Контент сгенерирован.
+        <a href="/review/{{ item.content_id }}" style="color:var(--accent2);text-decoration:underline;">
+            Перейти к контенту →
+        </a>
+    </div>
+    {% endif %}
+</div>
+
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+<!-- Форма редактирования -->
+<form hx-post="/plan/item/{{ item.id }}/save"
+      hx-target="#modal-content"
+      hx-swap="innerHTML">
+
+    <div class="form-group">
+        <label>Заголовок</label>
+        <input type="text" name="title" value="{{ item.title or '' }}"
+               placeholder="Заголовок пункта плана">
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;">
+        <div class="form-group">
+            <label>Дата (YYYY-MM-DD)</label>
+            <input type="date" name="date" value="{{ item.date or '' }}"
+                   style="width:100%;background:var(--bg3);border:1px solid var(--border);
+                          color:var(--text);padding:.55rem .8rem;border-radius:var(--radius);
+                          font-size:.92rem;">
+        </div>
+        <div class="form-group">
+            <label>Время публикации (HH:MM)</label>
+            <input type="time" name="time_slot" value="{{ item.time_slot or '' }}"
+                   style="width:100%;background:var(--bg3);border:1px solid var(--border);
+                          color:var(--text);padding:.55rem .8rem;border-radius:var(--radius);
+                          font-size:.92rem;">
+        </div>
+    </div>
+
+    <div class="form-group">
+        <label>Хук (hook)</label>
+        <textarea name="hook" rows="2"
+                  placeholder="Привлекающая внимание первая фраза">{{ item.brief_parsed.get('hook', '') }}</textarea>
+    </div>
+
+    <div class="form-group">
+        <label>Тезисы (outline)</label>
+        <textarea name="outline" rows="3"
+                  placeholder="Основные тезисы материала">{{ item.brief_parsed.get('outline', '') }}</textarea>
+    </div>
+
+    <div class="form-group">
+        <label>Призыв к действию (CTA)</label>
+        <textarea name="cta" rows="2"
+                  placeholder="Что должен сделать читатель">{{ item.brief_parsed.get('cta', '') }}</textarea>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;">
+        <div class="form-group">
+            <label>Ключевые слова (через запятую)</label>
+            <input type="text" name="keywords"
+                   value="{{ item.brief_parsed.get('keywords', []) | join(', ') }}"
+                   placeholder="слово1, слово2, слово3">
+        </div>
+        <div class="form-group">
+            <label>Рубрика (rubric)</label>
+            <input type="text" name="rubric"
+                   value="{{ item.brief_parsed.get('rubric', '') }}"
+                   placeholder="Название рубрики">
+        </div>
+    </div>
+
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem;">
+        <button type="submit" class="btn btn-primary btn-sm">💾 Сохранить</button>
+
+        {% if item.status in ('proposed', 'rejected', 'error') %}
+        <button type="button" class="btn btn-success btn-sm"
+                hx-post="/plan/item/{{ item.id }}/approve"
+                hx-target="#modal-content"
+                hx-swap="innerHTML">
+            ✅ Одобрить
+        </button>
+        {% endif %}
+
+        {% if item.status != 'rejected' %}
+        <button type="button" class="btn btn-secondary btn-sm"
+                hx-post="/plan/item/{{ item.id }}/reject"
+                hx-target="#modal-content"
+                hx-swap="innerHTML">
+            🚫 Отклонить
+        </button>
+        {% endif %}
+
+        <button type="button" class="btn btn-secondary btn-sm" onclick="closeModal()">
+            Закрыть
+        </button>
+    </div>
+</form>

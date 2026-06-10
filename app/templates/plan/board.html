@@ -1,0 +1,397 @@
+{% extends "base.html" %}
+
+{% block title %}План — {{ month_name }} {{ year }} — КонтентЗавод{% endblock %}
+
+{% block head %}
+<style>
+/* ── Шахматка плана ── */
+.plan-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .6rem;
+    margin-bottom: 1.2rem;
+}
+
+.plan-board-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg2);
+}
+
+.plan-board {
+    border-collapse: collapse;
+    min-width: 100%;
+    font-size: .82rem;
+}
+
+/* Заголовок: первая ячейка строк — sticky */
+.plan-board th.row-header,
+.plan-board td.row-header {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: var(--bg2);
+    border-right: 2px solid var(--border);
+    min-width: 160px;
+    max-width: 200px;
+    padding: .4rem .6rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.plan-board th {
+    background: var(--bg3);
+    padding: .35rem .45rem;
+    border: 1px solid var(--border);
+    text-align: center;
+    font-weight: 600;
+    color: var(--text2);
+    font-size: .75rem;
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    z-index: 3;
+}
+
+.plan-board th.row-header {
+    z-index: 4;
+    top: 0;
+}
+
+.plan-board td {
+    border: 1px solid var(--border);
+    padding: .25rem .3rem;
+    vertical-align: top;
+    min-width: 52px;
+    max-width: 80px;
+}
+
+.plan-board td.today-col {
+    background: rgba(108,99,255,.06);
+}
+
+.plan-board td.row-header.platform-header {
+    background: var(--bg3);
+    font-size: .8rem;
+    color: var(--accent2);
+    padding: .5rem .6rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+.plan-board td.row-header.type-header {
+    padding-left: 1.4rem;
+    font-weight: 400;
+    color: var(--text2);
+    font-size: .78rem;
+}
+
+/* Мини-карточки в ячейках */
+.plan-card {
+    display: block;
+    margin-bottom: 2px;
+    padding: .15rem .3rem;
+    border-radius: 3px;
+    font-size: .72rem;
+    line-height: 1.3;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    background: var(--bg3);
+    transition: opacity .1s;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 76px;
+    color: var(--text);
+    text-decoration: none;
+}
+.plan-card:hover { opacity: .8; }
+.plan-card.st-proposed   { border-left-color: #f59e0b; }
+.plan-card.st-approved   { border-left-color: #22c55e; background: rgba(34,197,94,.08); }
+.plan-card.st-rejected   { border-left-color: #64748b; opacity: .5; text-decoration: line-through; }
+.plan-card.st-generating { border-left-color: #38bdf8; animation: pulse-blue 1.5s infinite; }
+.plan-card.st-generated  { border-left-color: #6c63ff; background: rgba(108,99,255,.1); }
+.plan-card.st-error      { border-left-color: #ef4444; background: rgba(239,68,68,.08); }
+
+@keyframes pulse-blue {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: .5; }
+}
+
+/* Легенда */
+.plan-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem .8rem;
+    font-size: .78rem;
+    margin-bottom: 1rem;
+}
+.plan-legend-item { display: flex; align-items: center; gap: .3rem; }
+.plan-legend-dot  {
+    width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0;
+}
+
+/* Модалка */
+#modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.6);
+    z-index: 500;
+    align-items: center;
+    justify-content: center;
+}
+#modal-overlay.open {
+    display: flex;
+}
+#modal-box {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    width: 100%;
+    max-width: 540px;
+    max-height: 90vh;
+    overflow-y: auto;
+    position: relative;
+    box-shadow: 0 8px 32px rgba(0,0,0,.5);
+}
+#modal-close {
+    position: absolute;
+    top: .75rem; right: .75rem;
+    background: none;
+    border: none;
+    color: var(--text2);
+    font-size: 1.3rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: .15rem .4rem;
+    border-radius: var(--radius);
+}
+#modal-close:hover { background: var(--bg3); color: var(--text); }
+
+/* Бейджи пауз */
+.pause-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    padding: .2rem .55rem;
+    border-radius: 999px;
+    font-size: .75rem;
+    font-weight: 600;
+    background: rgba(239,68,68,.15);
+    color: #fca5a5;
+    border: 1px solid rgba(239,68,68,.3);
+}
+.autogen-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    padding: .2rem .55rem;
+    border-radius: 999px;
+    font-size: .75rem;
+    font-weight: 600;
+}
+.autogen-on  { background: rgba(34,197,94,.15); color: #86efac; border: 1px solid rgba(34,197,94,.3); }
+.autogen-off { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); }
+
+/* Пустое состояние */
+.empty-state {
+    text-align: center;
+    padding: 4rem 2rem;
+    color: var(--text2);
+}
+.empty-state .empty-icon { font-size: 3rem; margin-bottom: 1rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Контейнер модалки -->
+<div id="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div id="modal-box">
+        <button id="modal-close" onclick="closeModal()">✕</button>
+        <div id="modal-content"></div>
+    </div>
+</div>
+
+<h1 style="margin-bottom:1rem;">🗓 Контент-план</h1>
+
+{% if not project %}
+<!-- Пустое состояние: нет проектов -->
+<div class="card empty-state">
+    <div class="empty-icon">📋</div>
+    <p style="font-size:1.1rem;font-weight:600;margin-bottom:.5rem;">Нет активных проектов</p>
+    <p class="text-muted" style="margin-bottom:1.5rem;">Создайте проект и запустите завод, чтобы появился контент-план.</p>
+    <a href="/projects" class="btn btn-primary">Создать проект</a>
+</div>
+
+{% else %}
+
+<!-- ── Тулбар ── -->
+<div class="plan-toolbar">
+
+    <!-- Селектор проекта -->
+    {% if all_projects | length > 1 %}
+    <form method="get" action="/plan" style="display:inline-flex;align-items:center;gap:.4rem;">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="month" value="{{ month }}">
+        <select name="project" onchange="this.form.submit()"
+                style="padding:.3rem .6rem;background:var(--bg3);border:1px solid var(--border);
+                       color:var(--text);border-radius:var(--radius);font-size:.85rem;cursor:pointer;">
+            {% for p in all_projects %}
+            <option value="{{ p.slug }}" {% if p.id == project.id %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+        </select>
+    </form>
+    {% else %}
+    <span style="font-weight:600;font-size:1rem;">{{ project.name }}</span>
+    {% endif %}
+
+    <!-- Переключатель месяца -->
+    <a href="/plan?project={{ project.slug }}&year={{ prev_year }}&month={{ prev_month }}"
+       class="btn btn-secondary btn-sm">←</a>
+    <span style="font-weight:600;font-size:.95rem;min-width:120px;text-align:center;">
+        {{ month_name }} {{ year }}
+    </span>
+    <a href="/plan?project={{ project.slug }}&year={{ next_year }}&month={{ next_month }}"
+       class="btn btn-secondary btn-sm">→</a>
+    <a href="/plan?project={{ project.slug }}" class="btn btn-secondary btn-sm">Сегодня</a>
+
+    <!-- Одобрить всё за месяц -->
+    <form method="post" action="/plan/approve-period" style="display:inline;">
+        <input type="hidden" name="project_id" value="{{ project.id }}">
+        <input type="hidden" name="year" value="{{ year }}">
+        <input type="hidden" name="month" value="{{ month }}">
+        <button type="submit" class="btn btn-success btn-sm">✅ Одобрить всё за месяц</button>
+    </form>
+
+    <!-- Toggle autogen -->
+    <form method="post" action="/plan/autogen/{{ project.slug }}" style="display:inline;">
+        <button type="submit"
+                class="btn btn-sm {% if settings.autogen %}btn-warning{% else %}btn-secondary{% endif %}">
+            ⚡ Генерация: {% if settings.autogen %}ВКЛ{% else %}ВЫКЛ{% endif %}
+        </button>
+    </form>
+
+    <!-- Бейджи пауз -->
+    {% if settings.plan_paused %}
+    <span class="pause-badge">⏸ Планирование на паузе</span>
+    {% endif %}
+    {% if settings.gen_paused %}
+    <span class="pause-badge">⏸ Генерация на паузе</span>
+    {% endif %}
+
+</div><!-- /plan-toolbar -->
+
+<!-- ── Легенда ── -->
+<div class="plan-legend">
+    {% for st, color in status_colors.items() %}
+    <div class="plan-legend-item">
+        <div class="plan-legend-dot" style="background:{{ color }};"></div>
+        <span>{{ status_labels[st] }}</span>
+    </div>
+    {% endfor %}
+</div>
+
+{% if not rows_data %}
+<div class="card empty-state" style="padding:2rem;">
+    <div class="empty-icon">📋</div>
+    <p class="text-muted">В этом месяце нет пунктов плана.</p>
+    {% if project.stage != 'running' %}
+    <p class="text-muted" style="margin-top:.5rem;">Запустите проект, чтобы начать генерацию плана.</p>
+    <a href="/projects/{{ project.slug }}" class="btn btn-primary btn-sm" style="margin-top:1rem;">Настройки проекта</a>
+    {% endif %}
+</div>
+
+{% else %}
+
+<!-- ── Шахматка ── -->
+<div class="plan-board-wrap">
+<table class="plan-board">
+<thead>
+<tr>
+    <th class="row-header">Платформа / Тип</th>
+    {% for dh in day_headers %}
+    <th style="{% if dh.today %}color:var(--accent2);border-color:var(--accent);{% endif %}">
+        {{ dh.day }}<br><span style="font-weight:400;font-size:.7rem;">{{ dh.wd }}</span>
+    </th>
+    {% endfor %}
+</tr>
+</thead>
+<tbody>
+{% for plat_row in rows_data %}
+<!-- Строка-заголовок платформы -->
+<tr>
+    <td class="row-header platform-header" colspan="{{ day_headers | length + 1 }}"
+        onclick="togglePlatform('{{ plat_row.platform }}')">
+        ▾ {{ plat_row.platform_label }}
+    </td>
+</tr>
+{% for tr in plat_row.type_rows %}
+<!-- Строка типа контента (сворачивается вместе с платформой) -->
+<tr class="plat-{{ plat_row.platform }}-rows">
+    <td class="row-header type-header">{{ tr.type_label }}</td>
+    {% for day_items in tr.cells %}
+    {% set dh = day_headers[loop.index0] %}
+    <td {% if dh.today %}class="today-col"{% endif %}>
+        {% for item in day_items %}
+        <a class="plan-card st-{{ item.status }}"
+           href="#"
+           title="{{ item.status_label }}: {{ item.time_slot or '' }} {{ item.title }}"
+           hx-get="/plan/item/{{ item.id }}"
+           hx-target="#modal-content"
+           hx-swap="innerHTML"
+           onclick="openModal(event)">
+            {% if item.time_slot %}<span style="color:var(--text2);">{{ item.time_slot }}</span> {% endif %}{{ item.title[:30] }}{% if item.title | length > 30 %}…{% endif %}
+        </a>
+        {% endfor %}
+    </td>
+    {% endfor %}
+</tr>
+{% endfor %}
+{% endfor %}
+</tbody>
+</table>
+</div><!-- /plan-board-wrap -->
+
+{% endif %}<!-- /rows_data -->
+{% endif %}<!-- /project -->
+
+<!-- HTMX: обновление модалки -->
+<div id="modal-trigger-container" style="display:none;"
+     hx-on:htmx:after-swap="openModalAfterLoad()"></div>
+
+<script>
+function openModal(evt) {
+    if (evt) evt.preventDefault();
+    document.getElementById('modal-overlay').classList.add('open');
+}
+
+function closeModal() {
+    document.getElementById('modal-overlay').classList.remove('open');
+    document.getElementById('modal-content').innerHTML = '';
+}
+
+// После того как HTMX загрузил контент в #modal-content — открываем оверлей
+document.body.addEventListener('htmx:afterSwap', function(evt) {
+    if (evt.detail.target.id === 'modal-content') {
+        document.getElementById('modal-overlay').classList.add('open');
+    }
+});
+
+// Закрытие по Esc
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeModal();
+});
+
+// Сворачивание строк платформы
+function togglePlatform(platform) {
+    var rows = document.querySelectorAll('.plat-' + platform + '-rows');
+    rows.forEach(function(r) {
+        r.style.display = r.style.display === 'none' ? '' : 'none';
+    });
+}
+</script>
+{% endblock %}

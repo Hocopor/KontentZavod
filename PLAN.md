@@ -164,6 +164,70 @@
 
 ---
 
+## Этап 7 — Завод 2.0: автономный цикл «проект → стратегия → план → фабрика»
+
+Редизайн воркфлоу (запрос пользователя 2026-06-10, после деплоя). Целевой флоу:
+создать проект (имя + описание + цель, остальное придумывает ИИ, всё редактируемо) →
+подключить площадки (актуализировать подключения) → настройки запуска (платформы, типы контента
+per-платформа, горизонт контент-плана, lookahead генерации, retention) → кнопка «▶ В работу» →
+ИИ-маркетинговая стратегия per-платформа → контент-планы per-платформа/per-тип (rolling, всегда
+покрытие на горизонт) → шахматка согласования (строки: платформа→тип, столбцы: дни; модалка с
+правкой; одобрение поштучно/всё) → «Генерация одобренного» (один раз нажал — дальше rolling, по
+1 за тик, на lookahead дней вперёд, без регенерации готового) → вторая шахматка готового контента
+(превью, скачивание) → автопубликация по дате/времени плана (manual-типы → ручная очередь) →
+аналитика → пересмотр стратегии по метрикам + комментарий пользователя. Паузы плана и генерации —
+раздельные.
+
+### Контракты этапа 7 (зафиксированы оркестратором — менять только через PLAN)
+
+- **`app/catalog.py`** — каталог типов контента per платформа (только корректные для платформы):
+  `telegram: post, video` · `vk: post, video, story(manual)` · `instagram: post, story, reel — все manual` ·
+  `youtube: short` · `dzen: post, article`. Атрибуты типа: `label` (рус.), `kind` (`text|video|story`),
+  `publish` (`auto|manual`), `default_on` (bool). Хелперы: `allowed_types(platform)`, `default_types(platform)`, `type_info(platform, ctype)`.
+- **БД** (миграции в db.py, идемпотентно): новые таблицы
+  `strategies(id, project_id, version, status: generating|active|archived|error, strategy JSON, inputs JSON, user_comment, error_text, created_at, UNIQUE(project_id,version))`;
+  `plan_items(id, project_id, strategy_id, platform, content_type, date YYYY-MM-DD, time_slot HH:MM, title, brief JSON, status: proposed|approved|rejected|generating|generated|error, content_id→content, error_text, created_at, updated_at)`.
+  ALTER: `projects + stage (draft|running|paused, default draft)`, `projects + settings JSON`
+  (`plan_horizon_days=30, gen_lookahead_days=3, retention_days=14, plan_paused=0, gen_paused=0, autogen=0`);
+  `project_platforms + content_types JSON` ({"post": true, …}, NULL = default_on из каталога).
+  Пересборка `content`: CHECK type расширен до `('post','story','article','video_footage','video_slideshow')`.
+- **llm.py** — новые purposes + FAKE-заглушки: `profile` (поля projects: audience/tone/cta/themes/forbidden/extra),
+  `strategy` и `strategy_revise` ({summary, positioning, platforms: {<platform>: {goals, rubrics[], content_mix {<type>: N в неделю}, best_times[], kpi}}, у revise + changes_summary),
+  `plan` ({items: [{date, time, content_type, title, brief {hook, outline, cta, keywords[]}}]}),
+  `item_post` (как script, но одна платформа), `item_story` ({title, image_prompt(en), overlay_text, caption, features}).
+- **Джобы** (scheduler.py агентам ЗАПРЕЩЁН, подключает оркестратор): `process_brain` (2 мин):
+  стратегии generating → build_strategy; для running-проектов покрытие плана < горизонта и не plan_paused →
+  догенерация плана по 1 платформе за тик. `process_factory` (1 мин): 1 approved plan_item с
+  date ≤ today+lookahead, content_id IS NULL, autogen=1, не gen_paused → генерация контента по kind +
+  авто-schedule на дату/время плана (manual-типы → сразу manual_pending).
+- **Веб-стыки**: роутеры-заглушки web/launch.py, web/strategy.py, web/plan.py, web/queue.py созданы
+  оркестратором и подключены в main.py ДО волн — агенты их наполняют, main.py не трогают.
+  Кнопка «Стратегия» из _launch.html ведёт на GET `/projects/{slug}/strategy` (реализует web/strategy.py).
+
+### 7.1 Фундамент (ВОЛНА A)
+- [x] `[S]` db.py: таблицы strategies/plan_items + миграции (ALTER projects/project_platforms, пересборка content) + catalog.py + заглушки llm.py (6 purposes) + тесты — **ВОЛНА A ✅ 247/247**
+### 7.2 Проект и стратегия (ВОЛНА B, параллельно) — **✅ 310/310**
+- [x] `[S]` prompts/profile.txt + pipeline/profile.py + двухшаговое создание проекта (шаг 1: имя/описание/цель → «Придумать остальное»; шаг 2: редактируемый ИИ-профиль)
+- [x] `[S]` web/launch.py + projects/_launch.html: настройки запуска (типы контента по каталогу, горизонты, retention), «▶ В работу» (stage=running + strategies(generating)), паузы plan/gen, стоп — **ВОЛНА B ✅ 298/298**
+- [x] `[O]` pipeline/strategy.py: build_strategy(strategy_id) (мультишаговый: inputs → аналитическая записка → стратегия/revise-ветка при user_comment → фильтрация по каталогу → active, прошлые archived; ошибки → status=error) + prompts/strategy*.txt + web/strategy.py (просмотр/правка/пересмотр/retry)
+### 7.3 План и фабрика (ВОЛНА C, параллельно) — **✅ 388/388**
+- [x] `[S]` pipeline/planner.py + prompts/plan.txt (план по стратегии на период, per-платформа, только включённые типы) + services/brain.py (process_brain: build стратегий по 1 за тик + rolling-покрытие плана по 1 платформе за тик) — **ВОЛНА C ✅ 332/332**
+- [x] `[O]` pipeline/from_plan.py (text→item_post per-платформенный texts, video→idea+video_script сразу в production, story→Pollinations-картинка+caption) + services/factory.py (process_factory: 1 пункт за тик, дожим готовых видео в schedule, авто-schedule на дату/время плана, manual-типы → manual_pending, без регенерации)
+- [x] `[S]` web/plan.py — шахматка согласования: строки платформа→тип (details open), столбцы — дни месяца (переключение месяц/год, sticky первый столбец), модалка (правка title/даты/брифа, одобрить/отклонить), «Одобрить всё за месяц», toggle «⚡ Генерация одобренного» (autogen), индикаторы пауз; «🗓 План» в base.html
+### 7.4 Очередь готового и наладка (ВОЛНА D) — СЛЕДУЮЩАЯ
+- [x] `[S]` web/queue.py — шахматка готового контента (превью пост/видео/картинка, модалка, скачивание файлов, статус публикации, отмена/retry) + пункт «📦 Очередь» в base.html — **ВОЛНА D ✅** (роут /files/images/{id}.jpg добавил оркестратор до волны)
+- [x] `[S]` актуализация подключения площадок (именованные формы credentials с подсказками per-платформа + POST /check c httpx-проверкой TG getMe / VK groups.getById / YT oauth refresh), retention_days per project в cleanup (MEDIA_RETENTION_DAYS — фоллбэк), manual-очередь для story (картинка+caption+скачать), аналитика с разрезом по типам контента — **ВОЛНА D ✅ 459/459**
+- [x] `[S]` e2e-сценарий E: полный новый флоу (проект из 3 полей → профиль → launch → brain → стратегия → план → approve → factory → schedule → publish dry-run → /queue published + проверка пауз brain/factory) + DEPLOY.md дополнен (миграции этапа 7, джобы brain/factory, абзац «Воркфлоу 2.0») — **ВОЛНА D ✅ 460/460**
+- [x] оркестратор: джобы process_brain (2 мин) + process_factory (1 мин) в scheduler.py, смоук 8 страниц 200 + 7 джобов ✅, полный pytest 388/388 ✅
+
+**Приёмка:** создать проект из 3 полей → ИИ-профиль редактируем → «В работу» → стратегия появилась и
+читабельна → контент-план в шахматке по включённым типам → одобрить часть → «Генерация одобренного» →
+контент создан только для одобренных в lookahead-окне, schedule на дату плана, manual-типы в ручной
+очереди → /queue показывает готовое с превью и скачиванием → паузы останавливают brain/factory →
+пересмотр стратегии создаёт v2 с учётом комментария. Всё на FAKE_LLM + dry-run, полный pytest зелёный.
+✅ **Пройдена e2e-сценарием E (FAKE_LLM + dry-run): 460/460 тестов, смоук 9 страниц → 200, 7 джобов.
+Этап 7 реализован; с реальными ключами/LLM — после деплоя на mako-play.**
+
 ## Справочник бесплатного стека
 
 | Задача | Решение |
@@ -193,6 +257,7 @@
 - 2026-06-10: **Проекты — динамические, в БД с полным CRUD через дашборд** (решение пользователя: «контент-завод как отдел продвижения под каждый проект, добавлять/удалять проекты сам»). projects.yaml отменён. Per-project настройки площадок и креденшелы — в таблице project_platforms, токены шифруются Fernet. Удаление проекта запрещено при наличии контента (только архив).
 - 2026-06-10: E2E-проверки этапа 2 — без реальных токенов соцсетей: FAKE_LLM=1 (детерминированные заглушки в llm.py) + dry-run-режим паблишеров. Реальные токены — после полной реализации.
 - 2026-06-10 (волна 5): TTS — per-сцена mp3 (проще нарезка футажей по фразам), тайминги слов приводятся к глобальной шкале ролика; duration сцены — из ffprobe. Keywords сцен для поиска футажей LLM выдаёт СТРОГО на английском. Картинки — Pollinations.ai без ключа (Gemini image gen через роутер отложен). Рендер — 5 раздельных проходов ffmpeg вместо одного filter_complex (бюджет 4GB RAM). Статусы видео: text_review (текст сценария) → production (рендер, ≤3 попыток, ошибки в files.produce_error) → review (готовый ролик) → approved + планирование. Пути в content.files — абсолютные.
+- 2026-06-10 (прод): systemd-юнит завода — БЕЗ `EnvironmentFile=` (.env читает само приложение через python-dotenv): systemd не удаляет inline-комментарии и испорченные значения побеждают dotenv → был 404 от роутера на проде. В config.py добавлен харденинг (URL/ключи/bool/int — первый токен значения). DEPLOY.md обоих проектов переведены на конкретные значения сервера (mako-play, /srv/KontentZavod, /srv/LLMRouter, router.mak-o.ru) — сессионные переменные отменены.
 - 2026-06-10 (волна 7): TG-метрики через Telethon отложены до реальных ключей (новая зависимость + api_id/api_hash) — TG вводится вручную в /analytics. A/B — отдельной кнопкой и отдельным промптом script_ab.txt (generate_script не тронут): LLM сразу отдаёт оба полных варианта текстов, различающихся только хуком, — без сборки строк в коде. Analyzer держит ≤10 активных инсайтов на проект (деактивация по weight) и не может трогать reject-learnings. UNIQUE(schedule_id,date) на metrics → сбор и ручной ввод идемпотентны (INSERT OR REPLACE).
 - 2026-06-10 (волна 6): VK-клипы (`shortVideo.create`) недоступны обычным токенам → видео публикуется в стену через `video.save` + `wallpost=1`. YouTube — без google-api-python-client (тяжёлый): чистый httpx (oauth refresh → resumable init → PUT). Дневная квота YouTube — собственный счётчик published-записей за сегодня + новое исключение `PublishDeferred(retry_at)`: process_due переносит planned_at без увеличения attempts (квота ≠ ошибка).
 - 2026-06-10: Экономия токенов — схема «оркестратор + сабагенты» (решение пользователя): главная сессия только оркестрирует, работу выполняют сабагенты coder-simple (haiku) / coder (sonnet) / architect (opus). От переключения модели главной сессии через `"model"` в settings.json отказались. Stop-хук следит за свежестью STATE.md.

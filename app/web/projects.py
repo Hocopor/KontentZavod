@@ -12,15 +12,18 @@ CRUD проектов и площадок.
     POST /projects/{slug}/unarchive — разархивировать
     POST /projects/{slug}/delete    — удалить (запрещено при наличии content)
     POST /projects/{slug}/platform  — сохранить настройки площадки
+    POST /projects/{slug}/platforms/{platform}/check — проверить подключение (HTMX)
 """
 import json
 import re
 import unicodedata
 
+import httpx
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.db import get_db
+from app.llm import LLMError
 from app.security import encrypt, decrypt
 from app.templates_env import templates
 
@@ -135,10 +138,90 @@ async def projects_list(request: Request):
 
 @router.get("/new", response_class=HTMLResponse)
 async def project_new_form(request: Request):
+    """Шаг 1: минимальная форма (название, описание, цель) с выбором: ИИ или вручную."""
     return templates.TemplateResponse(
         request,
         "projects/form.html",
-        {"project": None, "errors": []},
+        {"project": None, "errors": [], "show_full": False},
+    )
+
+
+@router.post("/generate-profile", response_class=HTMLResponse)
+async def project_generate_profile(
+    request: Request,
+    name: str = Form(""),
+    description: str = Form(""),
+    goals: str = Form(""),
+    manual: str = Form("0"),
+):
+    """
+    HTMX-эндпоинт: генерирует маркетинговый профиль через ИИ (или возвращает пустую форму
+    при manual=1) и возвращает HTML-фрагмент с заполненной полной формой создания проекта.
+    """
+    from app.pipeline.profile import generate_profile
+
+    step1 = {"name": name.strip(), "description": description.strip(), "goals": goals.strip()}
+
+    if manual == "1":
+        # Вернуть пустую форму без ИИ
+        project_data = {
+            "name": step1["name"],
+            "description": step1["description"],
+            "goals": step1["goals"],
+            "audience": "", "tone": "", "cta": "",
+            "themes": "", "forbidden": "", "extra": "", "links": "",
+        }
+        return templates.TemplateResponse(
+            request,
+            "projects/_profile_fragment.html",
+            {
+                "project": project_data,
+                "ai_generated": False,
+                "llm_error": None,
+                "step1": step1,
+            },
+        )
+
+    try:
+        profile = generate_profile(
+            name=step1["name"],
+            description=step1["description"],
+            goals=step1["goals"],
+        )
+    except LLMError as exc:
+        return templates.TemplateResponse(
+            request,
+            "projects/_profile_fragment.html",
+            {
+                "project": None,
+                "ai_generated": False,
+                "llm_error": str(exc),
+                "step1": step1,
+            },
+        )
+
+    project_data = {
+        "name": step1["name"],
+        "description": step1["description"],
+        "goals": step1["goals"],
+        "audience": profile.get("audience", ""),
+        "tone": profile.get("tone", ""),
+        "cta": profile.get("cta", ""),
+        "themes": profile.get("themes", ""),
+        "forbidden": profile.get("forbidden", ""),
+        "extra": profile.get("extra", ""),
+        "links": "",
+    }
+
+    return templates.TemplateResponse(
+        request,
+        "projects/_profile_fragment.html",
+        {
+            "project": project_data,
+            "ai_generated": True,
+            "llm_error": None,
+            "step1": step1,
+        },
     )
 
 
@@ -172,6 +255,7 @@ async def project_new_save(
                     "themes": themes, "forbidden": forbidden, "extra": extra,
                 },
                 "errors": errors,
+                "show_full": True,
             },
             status_code=422,
         )
@@ -312,7 +396,7 @@ async def project_edit_form(request: Request, slug: str):
     return templates.TemplateResponse(
         request,
         "projects/form.html",
-        {"project": dict(project), "errors": []},
+        {"project": dict(project), "errors": [], "show_full": True},
     )
 
 
@@ -353,6 +437,7 @@ async def project_edit_save(
                              "cta": cta, "links": links, "themes": themes,
                              "forbidden": forbidden, "extra": extra},
                 "errors": errors,
+                "show_full": True,
             },
             status_code=422,
         )
@@ -443,8 +528,20 @@ async def platform_save(
     platform: str = Form(...),
     enabled: str = Form("0"),
     mode: str = Form("auto"),
-    channel_id: str = Form(""),
+    # telegram
+    bot_token: str = Form(""),
+    chat_id: str = Form(""),
+    # vk
+    access_token: str = Form(""),
     group_id: str = Form(""),
+    # youtube
+    client_id: str = Form(""),
+    client_secret: str = Form(""),
+    refresh_token: str = Form(""),
+    # instagram / dzen
+    note: str = Form(""),
+    # legacy compat fields (старые сохранения не ломаем)
+    channel_id: str = Form(""),
     channel: str = Form(""),
     account_name: str = Form(""),
     credentials_token: str = Form(""),
@@ -459,9 +556,11 @@ async def platform_save(
     if platform not in PLATFORMS:
         return HTMLResponse("Неизвестная площадка", status_code=400)
 
-    # Собрать config JSON в зависимости от платформы
+    # ── Собрать config JSON ───────────────────────────────────────────────────
+    # Для telegram: chat_id переопределяет legacy channel_id
+    tg_channel = chat_id.strip() or channel_id.strip()
     config_map = {
-        "telegram": {"channel_id": channel_id.strip()},
+        "telegram": {"channel_id": tg_channel},
         "vk": {"group_id": group_id.strip()},
         "youtube": {"channel": channel.strip()},
         "instagram": {"account": account_name.strip()},
@@ -471,19 +570,52 @@ async def platform_save(
 
     enabled_int = 1 if enabled in ("1", "on", "true") else 0
 
+    # ── Собрать credentials JSON по платформе ────────────────────────────────
+    def _build_new_credentials() -> str | None:
+        """Возвращает зашифрованный JSON или None, если нет данных."""
+        if platform == "telegram":
+            token = bot_token.strip() or credentials_token.strip()
+            if not token:
+                return None
+            return encrypt(json.dumps({"bot_token": token, "chat_id": tg_channel},
+                                      ensure_ascii=False))
+        elif platform == "vk":
+            token = access_token.strip() or credentials_token.strip()
+            if not token:
+                return None
+            return encrypt(json.dumps({"access_token": token}, ensure_ascii=False))
+        elif platform == "youtube":
+            cid = client_id.strip()
+            csec = client_secret.strip()
+            rtoken = refresh_token.strip() or credentials_token.strip()
+            if not (cid or csec or rtoken):
+                return None
+            return encrypt(json.dumps({
+                "client_id": cid,
+                "client_secret": csec,
+                "refresh_token": rtoken,
+            }, ensure_ascii=False))
+        else:
+            # instagram / dzen — без обязательных credentials
+            token = credentials_token.strip()
+            if not token:
+                return None
+            return encrypt(json.dumps({"token": token}, ensure_ascii=False))
+
+    new_creds_value = _build_new_credentials()
+
     with get_db() as db:
         existing = db.execute(
             "SELECT id, credentials FROM project_platforms WHERE project_id=? AND platform=?",
             (project["id"], platform),
         ).fetchone()
 
-        # Обновить credentials только если передан новый токен (не пустой)
-        token = credentials_token.strip()
-        if token:
-            new_credentials = encrypt(json.dumps({"token": token}, ensure_ascii=False))
+        # Обновить credentials только если передан новый (не пустой)
+        if new_creds_value is not None:
+            final_credentials = new_creds_value
         else:
             # Оставить старое значение
-            new_credentials = existing["credentials"] if existing else None
+            final_credentials = existing["credentials"] if existing else None
 
         if existing:
             db.execute(
@@ -492,7 +624,7 @@ async def platform_save(
                 SET enabled=?, mode=?, config=?, credentials=?
                 WHERE id=?
                 """,
-                (enabled_int, mode, config_json, new_credentials, existing["id"]),
+                (enabled_int, mode, config_json, final_credentials, existing["id"]),
             )
         else:
             db.execute(
@@ -501,7 +633,156 @@ async def platform_save(
                     (project_id, platform, enabled, mode, config, credentials)
                 VALUES (?,?,?,?,?,?)
                 """,
-                (project["id"], platform, enabled_int, mode, config_json, new_credentials),
+                (project["id"], platform, enabled_int, mode, config_json, final_credentials),
             )
 
     return RedirectResponse(f"/projects/{slug}", status_code=303)
+
+
+# ─── Проверка подключения площадки (HTMX) ────────────────────────────────────
+
+_CHECK_OK = (
+    '<span style="color:var(--green);font-weight:600;">✓ {msg}</span>'
+)
+_CHECK_ERR = (
+    '<span style="color:var(--red);font-weight:600;">✗ {msg}</span>'
+)
+
+_MANUAL_PLATFORMS = {"instagram", "dzen"}
+
+
+def _check_html_ok(msg: str) -> HTMLResponse:
+    return HTMLResponse(_CHECK_OK.format(msg=msg))
+
+
+def _check_html_err(msg: str) -> HTMLResponse:
+    return HTMLResponse(_CHECK_ERR.format(msg=msg))
+
+
+@router.post("/{slug}/platforms/{platform}/check", response_class=HTMLResponse)
+async def platform_check(slug: str, platform: str):
+    """HTMX-эндпоинт: проверить подключение к площадке."""
+    if platform not in PLATFORMS:
+        return HTMLResponse("Неизвестная площадка", status_code=400)
+
+    with get_db() as db:
+        project = db.execute(
+            "SELECT id FROM projects WHERE slug=?", (slug,)
+        ).fetchone()
+    if project is None:
+        return HTMLResponse("Проект не найден", status_code=404)
+
+    # instagram / dzen — ручная публикация, проверка не требуется
+    if platform in _MANUAL_PLATFORMS:
+        return _check_html_ok("ручная публикация, проверка не требуется")
+
+    with get_db() as db:
+        row = db.execute(
+            "SELECT credentials, config FROM project_platforms"
+            " WHERE project_id=? AND platform=?",
+            (project["id"], platform),
+        ).fetchone()
+
+    credentials: dict = {}
+    if row and row["credentials"]:
+        try:
+            credentials = json.loads(decrypt(row["credentials"]))
+        except (ValueError, Exception):
+            return _check_html_err("Не удалось расшифровать credentials")
+
+    config: dict = {}
+    if row and row["config"]:
+        try:
+            config = json.loads(row["config"])
+        except (json.JSONDecodeError, TypeError):
+            config = {}
+
+    try:
+        if platform == "telegram":
+            return _check_telegram(credentials, config)
+        elif platform == "vk":
+            return _check_vk(credentials, config)
+        elif platform == "youtube":
+            return _check_youtube(credentials)
+    except Exception as exc:  # noqa: BLE001
+        return _check_html_err(f"Ошибка: {exc}")
+
+    return _check_html_err("Неизвестная платформа")
+
+
+def _check_telegram(credentials: dict, config: dict) -> HTMLResponse:
+    bot_token = credentials.get("bot_token", "")
+    if not bot_token:
+        return _check_html_err("bot_token не задан")
+    try:
+        resp = httpx.get(
+            f"https://api.telegram.org/bot{bot_token}/getMe",
+            timeout=10,
+        )
+        data = resp.json()
+    except httpx.HTTPError as exc:
+        return _check_html_err(f"сетевая ошибка: {exc}")
+    if not data.get("ok"):
+        desc = data.get("description", "нет описания")
+        return _check_html_err(f"Telegram API: {desc}")
+    username = data.get("result", {}).get("username", "?")
+    return _check_html_ok(f"бот @{username} доступен")
+
+
+def _check_vk(credentials: dict, config: dict) -> HTMLResponse:
+    access_token = credentials.get("access_token", "")
+    group_id = config.get("group_id", "")
+    if not access_token:
+        return _check_html_err("access_token не задан")
+    try:
+        params: dict = {
+            "access_token": access_token,
+            "v": "5.199",
+        }
+        if group_id:
+            params["group_id"] = group_id
+        resp = httpx.get(
+            "https://api.vk.com/method/groups.getById",
+            params=params,
+            timeout=10,
+        )
+        data = resp.json()
+    except httpx.HTTPError as exc:
+        return _check_html_err(f"сетевая ошибка: {exc}")
+    if "error" in data:
+        err = data["error"]
+        return _check_html_err(
+            f"VK API {err.get('error_code')}: {err.get('error_msg', 'ошибка')}"
+        )
+    groups = data.get("response", [])
+    name = groups[0].get("name", "?") if groups else "группа найдена"
+    return _check_html_ok(f"группа «{name}» доступна")
+
+
+def _check_youtube(credentials: dict) -> HTMLResponse:
+    cid = credentials.get("client_id", "")
+    csec = credentials.get("client_secret", "")
+    rtoken = credentials.get("refresh_token", "")
+    if not (cid and csec and rtoken):
+        return _check_html_err("client_id / client_secret / refresh_token не заданы")
+    try:
+        resp = httpx.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": cid,
+                "client_secret": csec,
+                "refresh_token": rtoken,
+                "grant_type": "refresh_token",
+            },
+            timeout=10,
+        )
+    except httpx.HTTPError as exc:
+        return _check_html_err(f"сетевая ошибка: {exc}")
+    if resp.status_code != 200:
+        try:
+            body = resp.json()
+            errmsg = body.get("error_description") or body.get("error") or resp.text
+        except Exception:
+            errmsg = resp.text
+        return _check_html_err(f"OAuth ошибка: {errmsg}")
+    return _check_html_ok("OAuth токен обновлён успешно")

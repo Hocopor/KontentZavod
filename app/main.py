@@ -20,6 +20,10 @@ from app.web.calendar import router as calendar_router
 from app.web.manual import router as manual_router
 from app.web.files import router as files_router
 from app.web.analytics import router as analytics_router
+from app.web.launch import router as launch_router
+from app.web.strategy import router as strategy_router
+from app.web.plan import router as plan_router
+from app.web.queue import router as queue_router
 
 
 @asynccontextmanager
@@ -59,6 +63,10 @@ def create_app() -> FastAPI:
     app.include_router(manual_router)
     app.include_router(files_router)
     app.include_router(analytics_router)
+    app.include_router(launch_router)
+    app.include_router(strategy_router)
+    app.include_router(plan_router)
+    app.include_router(queue_router)
 
     return app
 

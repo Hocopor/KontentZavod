@@ -153,60 +153,106 @@
             </div>
         </div>
 
-        <!-- Config fields per platform -->
+        <!-- Credentials + config fields per platform -->
         {% if pl.platform == 'telegram' %}
         <div class="form-group">
-            <label>ID канала / группы</label>
-            <input type="text" name="channel_id" value="{{ pl.config_parsed.get('channel_id', '') }}"
-                   placeholder="@mychannel или -1001234567890" />
-            <div class="form-help">Имя канала (с @) или числовой ID. Бот должен быть администратором.</div>
+            <label>Bot Token
+                {% if pl.has_credentials %}<span style="color:var(--green);">токен задан ✓</span>{% endif %}
+            </label>
+            <input type="password" name="bot_token"
+                   placeholder="{% if pl.has_credentials %}Оставьте пустым, чтобы не менять{% else %}123456789:AAH...{% endif %}" />
+            <div class="form-help">Токен бота от @BotFather. Хранится зашифрованным.</div>
         </div>
+        <div class="form-group">
+            <label>Chat ID канала / группы</label>
+            <input type="text" name="chat_id" value="{{ pl.config_parsed.get('channel_id', '') }}"
+                   placeholder="@mychannel или -1001234567890" />
+            <div class="form-help">@username канала или числовой ID (бот должен быть администратором).</div>
+        </div>
+
         {% elif pl.platform == 'vk' %}
         <div class="form-group">
-            <label>ID группы ВКонтакте</label>
-            <input type="text" name="group_id" value="{{ pl.config_parsed.get('group_id', '') }}"
-                   placeholder="123456789 (без минуса)" />
+            <label>Access Token сообщества
+                {% if pl.has_credentials %}<span style="color:var(--green);">токен задан ✓</span>{% endif %}
+            </label>
+            <input type="password" name="access_token"
+                   placeholder="{% if pl.has_credentials %}Оставьте пустым, чтобы не менять{% else %}vk1.a.xxx{% endif %}" />
+            <div class="form-help">Токен СООБЩЕСТВА с правами wall + video. Хранится зашифрованным.</div>
         </div>
+        <div class="form-group">
+            <label>ID группы (без минуса)</label>
+            <input type="text" name="group_id" value="{{ pl.config_parsed.get('group_id', '') }}"
+                   placeholder="123456789" />
+            <div class="form-help">Числовой ID сообщества без минуса.</div>
+        </div>
+
         {% elif pl.platform == 'youtube' %}
         <div class="form-group">
-            <label>Канал YouTube</label>
-            <input type="text" name="channel" value="{{ pl.config_parsed.get('channel', '') }}"
-                   placeholder="UCxxxxxxxxxxxxxxxxxxxxxxxx или @handle" />
+            <label>Client ID
+                {% if pl.has_credentials %}<span style="color:var(--green);">credentials заданы ✓</span>{% endif %}
+            </label>
+            <input type="text" name="client_id"
+                   placeholder="{% if pl.has_credentials %}Оставьте пустым, чтобы не менять{% else %}xxx.apps.googleusercontent.com{% endif %}" />
+            <div class="form-help">OAuth 2.0 Client ID из Google Cloud Console.</div>
         </div>
-        {% elif pl.platform == 'instagram' %}
         <div class="form-group">
-            <label>Имя аккаунта Instagram</label>
+            <label>Client Secret</label>
+            <input type="password" name="client_secret"
+                   placeholder="{% if pl.has_credentials %}Оставьте пустым, чтобы не менять{% else %}GOCSPX-xxx{% endif %}" />
+        </div>
+        <div class="form-group">
+            <label>Refresh Token</label>
+            <input type="password" name="refresh_token"
+                   placeholder="{% if pl.has_credentials %}Оставьте пустым, чтобы не менять{% else %}1//0g...{% endif %}" />
+            <div class="form-help">OAuth Refresh Token. Privacy по умолчанию <strong>private</strong> до прохождения OAuth audit.</div>
+        </div>
+
+        {% elif pl.platform == 'instagram' %}
+        <div class="alert" style="background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.3);color:var(--text);border-radius:var(--radius);padding:.75rem;margin-bottom:.75rem;font-size:.88rem;">
+            Публикация в Instagram выполняется <strong>вручную</strong> — credentials не требуются.<br>
+            Используйте режим «Ручной» и публикуйте через приложение.
+        </div>
+        <div class="form-group">
+            <label>Имя аккаунта (заметка)</label>
             <input type="text" name="account_name" value="{{ pl.config_parsed.get('account', '') }}"
                    placeholder="my_account (без @)" />
         </div>
+
         {% elif pl.platform == 'dzen' %}
+        <div class="alert" style="background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.3);color:var(--text);border-radius:var(--radius);padding:.75rem;margin-bottom:.75rem;font-size:.88rem;">
+            Публикация в Яндекс.Дзен выполняется <strong>вручную</strong> — credentials не требуются.<br>
+            Используйте режим «Ручной» и публикуйте через кабинет Дзен.
+        </div>
         <div class="form-group">
-            <label>Имя канала Яндекс.Дзен</label>
+            <label>Имя канала (заметка)</label>
             <input type="text" name="account_name" value="{{ pl.config_parsed.get('account', '') }}"
                    placeholder="myproject" />
         </div>
         {% endif %}
 
-        <div class="form-group">
-            <label>Токен / API-ключ
-                {% if pl.has_credentials %}<span style="color:var(--green);">✓ задан</span>{% endif %}
-            </label>
-            <input type="password" name="credentials_token"
-                   placeholder="{% if pl.has_credentials %}Оставьте пустым, чтобы не менять{% else %}Введите токен{% endif %}" />
-            <div class="form-help">
-                {% if pl.platform == 'telegram' %}Токен Telegram-бота от @BotFather.
-                {% elif pl.platform == 'vk' %}Токен группы VK (manage, wall, photos).
-                {% elif pl.platform == 'youtube' %}OAuth refresh-токен YouTube Data API.
-                {% elif pl.platform == 'instagram' %}Access Token Instagram Graph API.
-                {% elif pl.platform == 'dzen' %}Токен Яндекс.Дзен (PublisherAPI).
-                {% endif %}
-                Хранится в зашифрованном виде.
-            </div>
+        <div class="flex gap-sm" style="flex-wrap:wrap;margin-top:.5rem;">
+            <button type="submit" class="btn btn-primary btn-sm">Сохранить настройки площадки</button>
+            {% if pl.platform not in ('instagram', 'dzen') %}
+            <button type="button" class="btn btn-secondary btn-sm"
+                    hx-post="/projects/{{ project.slug }}/platforms/{{ pl.platform }}/check"
+                    hx-target="#check-result-{{ pl.platform }}"
+                    hx-swap="innerHTML">
+                Проверить подключение
+            </button>
+            {% else %}
+            <button type="button" class="btn btn-secondary btn-sm"
+                    hx-post="/projects/{{ project.slug }}/platforms/{{ pl.platform }}/check"
+                    hx-target="#check-result-{{ pl.platform }}"
+                    hx-swap="innerHTML">
+                Проверить подключение
+            </button>
+            {% endif %}
         </div>
-
-        <button type="submit" class="btn btn-primary btn-sm">Сохранить настройки площадки</button>
+        <div id="check-result-{{ pl.platform }}" style="margin-top:.5rem;font-size:.88rem;"></div>
     </form>
 </details>
 {% endfor %}
+
+<div id="launch-panel" hx-get="/projects/{{ project.slug }}/launch-panel" hx-trigger="load"></div>
 
 {% endblock %}

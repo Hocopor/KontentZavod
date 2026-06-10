@@ -48,15 +48,30 @@ def _parse_features(features_json: str | None) -> dict:
         return {}
 
 
+CONTENT_TYPE_NAMES = {
+    "post": "Пост",
+    "story": "История",
+    "article": "Статья",
+    "video_footage": "Видео (футаж)",
+    "video_slideshow": "Видео (слайдшоу)",
+}
+
+
 @router.get("", response_class=HTMLResponse)
 async def analytics_page(
     request: Request,
     project_id: str = "",
     days: int = 30,
+    content_type: str = "",
 ):
     if days not in (7, 30, 90):
         days = 30
     since = _date_from(days)
+
+    # Валидация content_type
+    valid_types = set(CONTENT_TYPE_NAMES.keys())
+    if content_type and content_type not in valid_types:
+        content_type = ""
 
     with get_db() as db:
         # Все активные проекты для фильтра
@@ -67,6 +82,11 @@ async def analytics_page(
         # ── Базовый фильтр по проекту ─────────────────────────────────────────
         proj_filter = "AND p.id = :pid" if project_id else ""
         proj_params: dict = {"since": since, "pid": project_id} if project_id else {"since": since}
+
+        # ── Фильтр по типу контента ───────────────────────────────────────────
+        type_filter = "AND c.type = :ctype" if content_type else ""
+        if content_type:
+            proj_params["ctype"] = content_type
 
         # ── Сводные карточки ──────────────────────────────────────────────────
         summary = db.execute(
@@ -91,6 +111,7 @@ async def analytics_page(
             WHERE s.status IN ('published', 'manual_done')
               AND s.planned_at >= :since
               {proj_filter}
+              {type_filter}
             """,
             proj_params,
         ).fetchone()
@@ -116,6 +137,7 @@ async def analytics_page(
             WHERE m.date >= :since
               AND s.status IN ('published', 'manual_done')
               {proj_filter}
+              {type_filter}
             GROUP BY m.date, s.platform
             ORDER BY m.date
             """,
@@ -143,7 +165,38 @@ async def analytics_page(
             WHERE s.status IN ('published', 'manual_done')
               AND s.planned_at >= :since
               {proj_filter}
+              {type_filter}
             GROUP BY s.platform
+            ORDER BY avg_views DESC
+            """,
+            proj_params,
+        ).fetchall()
+
+        # ── Разрез по типам контента ──────────────────────────────────────────
+        type_breakdown_rows = db.execute(
+            f"""
+            SELECT
+                c.type              AS content_type,
+                COUNT(DISTINCT s.id) AS pub_count,
+                COALESCE(AVG(m.views),    0) AS avg_views,
+                COALESCE(AVG(m.likes),    0) AS avg_likes,
+                COALESCE(AVG(m.comments), 0) AS avg_comments,
+                COALESCE(AVG(m.shares),   0) AS avg_shares
+            FROM schedule s
+            JOIN content c  ON c.id = s.content_id
+            JOIN projects p ON p.id = c.project_id
+            LEFT JOIN (
+                SELECT schedule_id, MAX(date) AS last_date
+                FROM metrics
+                WHERE date >= :since
+                GROUP BY schedule_id
+            ) ld ON ld.schedule_id = s.id
+            LEFT JOIN metrics m
+                ON m.schedule_id = s.id AND m.date = ld.last_date
+            WHERE s.status IN ('published', 'manual_done')
+              AND s.planned_at >= :since
+              {proj_filter}
+            GROUP BY c.type
             ORDER BY avg_views DESC
             """,
             proj_params,
@@ -177,6 +230,7 @@ async def analytics_page(
             WHERE s.status IN ('published', 'manual_done')
               AND s.planned_at >= :since
               {proj_filter}
+              {type_filter}
             ORDER BY views DESC
             """,
             proj_params,
@@ -198,6 +252,7 @@ async def analytics_page(
             WHERE s.status IN ('published', 'manual_done')
               AND s.planned_at >= :since
               {proj_filter}
+              {type_filter}
             ORDER BY s.planned_at DESC
             """,
             proj_params,
@@ -324,6 +379,20 @@ async def analytics_page(
         "total_shares": 0,
     }
 
+    # ── Разрез по типам контента ──────────────────────────────────────────────
+    type_breakdown = []
+    for row in type_breakdown_rows:
+        ctype = row["content_type"]
+        type_breakdown.append({
+            "content_type": ctype,
+            "type_name": CONTENT_TYPE_NAMES.get(ctype, ctype),
+            "pub_count": row["pub_count"],
+            "avg_views": round(row["avg_views"], 1),
+            "avg_likes": round(row["avg_likes"], 1),
+            "avg_comments": round(row["avg_comments"], 1),
+            "avg_shares": round(row["avg_shares"], 1),
+        })
+
     flash = request.query_params.get("flash", "")
     error = request.query_params.get("error", "")
 
@@ -334,10 +403,13 @@ async def analytics_page(
             "projects": [dict(p) for p in projects],
             "selected_project": project_id,
             "days": days,
+            "content_type": content_type,
+            "content_type_names": CONTENT_TYPE_NAMES,
             "summary": summary_dict,
             "chart_data": chart_data,
             "top5": top5,
             "anti5": anti5,
+            "type_breakdown": type_breakdown,
             "manual_list": manual_list,
             "flash": flash,
             "error": error,

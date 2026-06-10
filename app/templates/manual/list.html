@@ -53,6 +53,22 @@
     <div class="text-sm text-muted mb-1"><strong>Заголовок ({{ item.platform }}):</strong> {{ item.extra.title }}</div>
     {% endif %}
 
+    <!-- Story: картинка + caption -->
+    {% if item.is_story %}
+    <div style="margin-bottom:1rem;">
+        <img src="/files/images/{{ item.content_id }}.jpg"
+             alt="Story" style="max-width:240px;border-radius:8px;display:block;margin-bottom:.5rem;" />
+        <a href="/files/images/{{ item.content_id }}.jpg" download class="btn btn-secondary btn-sm">
+            Скачать картинку
+        </a>
+    </div>
+    {% if item.story_caption %}
+    <div style="margin-bottom:.75rem;font-size:.9rem;">
+        <strong>Caption:</strong> {{ item.story_caption }}
+    </div>
+    {% endif %}
+    {% endif %}
+
     <!-- Видеоплеер (если есть видео) -->
     {% if item.has_video %}
     <div style="margin-bottom:1rem;">

@@ -80,6 +80,11 @@ async def manual_list(request: Request):
         item["files_parsed"] = files
         item["content_id"] = item["content_id"]
         item["has_video"] = bool(files.get("video_path"))
+        # Story: caption из texts
+        is_story = item.get("type") == "story"
+        item["is_story"] = is_story
+        if is_story:
+            item["story_caption"] = pdata.get("caption", text_value)
         items.append(item)
 
     flash = request.query_params.get("flash", "")

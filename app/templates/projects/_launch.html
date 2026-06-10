@@ -1,0 +1,190 @@
+{# Панель запуска завода — фрагмент для lazy-load в detail.html #}
+
+<div class="card mb-2" id="launch-panel-inner">
+    <div class="flex-center gap-md mb-2" style="justify-content:space-between; flex-wrap:wrap;">
+        <h2 style="margin-bottom:0;">🚀 Запуск завода</h2>
+
+        {# Статусная строка #}
+        <div class="flex-center gap-sm" style="flex-wrap:wrap;">
+            {% if project.stage == 'running' %}
+            <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green); font-size:.82rem;">🟢 В работе</span>
+            {% elif project.stage == 'paused' %}
+            <span class="badge" style="background:rgba(245,158,11,.15);color:var(--yellow); font-size:.82rem;">⏸ На паузе</span>
+            {% else %}
+            <span class="badge" style="background:rgba(148,163,184,.1);color:var(--text2); font-size:.82rem;">⚪ Черновик</span>
+            {% endif %}
+
+            {# Статус стратегии #}
+            {% if strategy.exists %}
+                {% if strategy.status == 'generating' %}
+                <span class="text-sm text-muted">Стратегия: <em>генерируется…</em></span>
+                {% elif strategy.status == 'active' %}
+                <span class="text-sm" style="color:var(--green);">Стратегия: активна v{{ strategy.version }}</span>
+                {% elif strategy.status == 'error' %}
+                <span class="text-sm" style="color:var(--red);">Стратегия: ошибка{% if strategy.error_text %} — {{ strategy.error_text }}{% endif %}</span>
+                {% else %}
+                <span class="text-sm text-muted">Стратегия: {{ strategy.status }} v{{ strategy.version }}</span>
+                {% endif %}
+            {% else %}
+            <span class="text-sm text-muted">Стратегия: ещё не создана</span>
+            {% endif %}
+
+            <a href="/projects/{{ project.slug }}/strategy" class="btn btn-secondary btn-sm">📋 Стратегия</a>
+        </div>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error mb-2">{{ error }}</div>
+    {% endif %}
+
+    {# ── Форма настроек + запуска ── #}
+    <form id="launch-form-{{ project.slug }}">
+
+        {% if enabled_platforms %}
+        <div class="mb-2">
+            <div class="section-title">Типы контента по площадкам</div>
+            {% for pl in enabled_platforms %}
+            <div class="mb-2">
+                <div class="text-sm" style="font-weight:600; margin-bottom:.4rem;">{{ pl.display_name }}</div>
+                <div class="flex gap-md" style="flex-wrap:wrap;">
+                    {% for ct in pl.types %}
+                    <div class="toggle-wrap">
+                        <input type="checkbox"
+                               class="toggle"
+                               id="ct_{{ pl.platform }}_{{ ct.key }}"
+                               name="ct_{{ pl.platform }}_{{ ct.key }}"
+                               value="1"
+                               {% if ct.enabled %}checked{% endif %} />
+                        <label for="ct_{{ pl.platform }}_{{ ct.key }}" style="cursor:pointer; margin-bottom:0;">
+                            {{ ct.label }}
+                            {% if ct.publish == 'manual' %}
+                            <span class="badge" style="background:rgba(148,163,184,.1);color:var(--text2); font-size:.68rem; margin-left:.2rem;">вручную</span>
+                            {% endif %}
+                        </label>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-info mb-2">
+            Нет подключённых площадок. Подключите площадки выше, чтобы настроить типы контента.
+        </div>
+        {% endif %}
+
+        {# Числовые настройки #}
+        <div class="section-title">Параметры генерации</div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1rem; margin-bottom:1.25rem;">
+            <div class="form-group" style="margin-bottom:0;">
+                <label for="plan_horizon_days_{{ project.slug }}">Контент-план на (дней вперёд)</label>
+                <input type="number" id="plan_horizon_days_{{ project.slug }}" name="plan_horizon_days"
+                       value="{{ settings.plan_horizon_days }}" min="7" max="90" />
+                <div class="form-help">7–90 дней</div>
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+                <label for="gen_lookahead_days_{{ project.slug }}">Генерация контента на (дней вперёд)</label>
+                <input type="number" id="gen_lookahead_days_{{ project.slug }}" name="gen_lookahead_days"
+                       value="{{ settings.gen_lookahead_days }}" min="1" max="14" />
+                <div class="form-help">1–14 дней</div>
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+                <label for="retention_days_{{ project.slug }}">Хранить опубликованное (дней)</label>
+                <input type="number" id="retention_days_{{ project.slug }}" name="retention_days"
+                       value="{{ settings.retention_days }}" min="3" max="60" />
+                <div class="form-help">3–60 дней</div>
+            </div>
+        </div>
+
+        {# Кнопки управления #}
+        <div class="flex gap-sm" style="flex-wrap:wrap; align-items:center;">
+            {% if project.stage != 'running' %}
+            <button type="button" class="btn btn-secondary btn-sm"
+                    hx-post="/projects/{{ project.slug }}/launch-settings"
+                    hx-include="#launch-form-{{ project.slug }}"
+                    hx-target="#launch-panel"
+                    hx-swap="outerHTML">
+                💾 Сохранить настройки
+            </button>
+            <button type="button" class="btn btn-success btn-sm"
+                    hx-post="/projects/{{ project.slug }}/launch"
+                    hx-include="#launch-form-{{ project.slug }}"
+                    hx-target="#launch-panel"
+                    hx-swap="outerHTML">
+                ▶ В работу
+            </button>
+            {% else %}
+            {# Проект запущен — показать кнопки управления #}
+            <button type="button" class="btn btn-warning btn-sm"
+                    hx-post="/projects/{{ project.slug }}/stop"
+                    hx-target="#launch-panel"
+                    hx-swap="outerHTML"
+                    onclick="return confirm('Остановить проект?')">
+                ⏹ Остановить проект
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm"
+                    hx-post="/projects/{{ project.slug }}/launch-settings"
+                    hx-include="#launch-form-{{ project.slug }}"
+                    hx-target="#launch-panel"
+                    hx-swap="outerHTML">
+                💾 Сохранить настройки
+            </button>
+            {% endif %}
+        </div>
+
+        {# Тумблеры пауз (только если running) #}
+        {% if project.stage == 'running' %}
+        <div class="section-title mt-2">Управление потоками</div>
+        <div class="flex gap-md" style="flex-wrap:wrap; align-items:center; margin-bottom:.5rem;">
+            {# Контент-план #}
+            <div class="flex-center gap-sm">
+                <span class="text-sm text-muted">Контент-план:</span>
+                {% if settings.plan_paused %}
+                <span class="badge" style="background:rgba(245,158,11,.15);color:var(--yellow);">на паузе</span>
+                {% else %}
+                <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);">идёт</span>
+                {% endif %}
+                <button type="button" class="btn btn-secondary btn-sm"
+                        hx-post="/projects/{{ project.slug }}/toggle-pause/plan"
+                        hx-target="#launch-panel"
+                        hx-swap="outerHTML">
+                    {% if settings.plan_paused %}▶ Возобновить{% else %}⏸ Пауза{% endif %}
+                </button>
+            </div>
+
+            {# Генерация контента #}
+            <div class="flex-center gap-sm">
+                <span class="text-sm text-muted">Генерация контента:</span>
+                {% if settings.gen_paused %}
+                <span class="badge" style="background:rgba(245,158,11,.15);color:var(--yellow);">на паузе</span>
+                {% else %}
+                <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);">идёт</span>
+                {% endif %}
+                <button type="button" class="btn btn-secondary btn-sm"
+                        hx-post="/projects/{{ project.slug }}/toggle-pause/gen"
+                        hx-target="#launch-panel"
+                        hx-swap="outerHTML">
+                    {% if settings.gen_paused %}▶ Возобновить{% else %}⏸ Пауза{% endif %}
+                </button>
+            </div>
+
+            {# Автогенерация одобренного #}
+            <div class="flex-center gap-sm">
+                <span class="text-sm text-muted">Автогенерация одобренного:</span>
+                {% if settings.autogen %}
+                <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);">вкл</span>
+                {% else %}
+                <span class="badge" style="background:rgba(148,163,184,.1);color:var(--text2);">выкл</span>
+                {% endif %}
+                <button type="button" class="btn btn-secondary btn-sm"
+                        hx-post="/projects/{{ project.slug }}/toggle-pause/autogen"
+                        hx-target="#launch-panel"
+                        hx-swap="outerHTML">
+                    {% if settings.autogen %}Выключить{% else %}Включить{% endif %}
+                </button>
+            </div>
+        </div>
+        {% endif %}
+
+    </form>
+</div>

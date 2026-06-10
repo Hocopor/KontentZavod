@@ -103,8 +103,8 @@ def test_platform_token_encrypted(client, patch_env):
             "platform": "telegram",
             "enabled": "1",
             "mode": "auto",
-            "channel_id": "@testchannel",
-            "credentials_token": plain_token,
+            "bot_token": plain_token,
+            "chat_id": "@testchannel",
         },
         follow_redirects=False,
     )
@@ -131,11 +131,11 @@ def test_platform_token_encrypted(client, patch_env):
     assert stored != plain_token, "Токен хранится в открытом виде — это ошибка!"
     assert len(stored) > 20, "credentials выглядит подозрительно коротко"
 
-    # Decrypt возвращает исходник
+    # Decrypt возвращает исходник — новый формат использует bot_token
     from app.security import decrypt
     decrypted_json = decrypt(stored)
     data = json.loads(decrypted_json)
-    assert data["token"] == plain_token
+    assert data["bot_token"] == plain_token
 
 
 def test_platform_token_not_changed_on_empty(client, patch_env):
@@ -143,11 +143,11 @@ def test_platform_token_not_changed_on_empty(client, patch_env):
     import app.config as cfg_module
     slug = create_project(client, name="Сохранение токена")
 
-    # Первый раз — сохраняем токен
+    # Первый раз — сохраняем токен через named field (vk: access_token)
     client.post(
         f"/projects/{slug}/platform",
         data={"platform": "vk", "enabled": "1", "mode": "auto",
-              "group_id": "123", "credentials_token": "initial-vk-token"},
+              "group_id": "123", "access_token": "initial-vk-token"},
         follow_redirects=False,
     )
 
@@ -155,7 +155,7 @@ def test_platform_token_not_changed_on_empty(client, patch_env):
     client.post(
         f"/projects/{slug}/platform",
         data={"platform": "vk", "enabled": "0", "mode": "manual",
-              "group_id": "456", "credentials_token": ""},
+              "group_id": "456"},
         follow_redirects=False,
     )
 
@@ -170,7 +170,7 @@ def test_platform_token_not_changed_on_empty(client, patch_env):
 
     from app.security import decrypt
     data = json.loads(decrypt(row["credentials"]))
-    assert data["token"] == "initial-vk-token"
+    assert data["access_token"] == "initial-vk-token"
 
 
 def test_delete_empty_project(client):

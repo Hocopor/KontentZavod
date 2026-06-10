@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+
+{% block title %}Стратегия: {{ project.name }} — КонтентЗавод{% endblock %}
+
+{% block head %}
+<style>
+.strat-platform { margin-bottom: 1.25rem; }
+.mix-table { width: auto; border-collapse: collapse; margin: .5rem 0; }
+.mix-table td, .mix-table th {
+    border: 1px solid var(--border); padding: .35rem .75rem; font-size: .88rem; text-align: left;
+}
+.mix-table th { background: var(--bg3); color: var(--text2); font-weight: 600; }
+.rubric-item { margin-bottom: .35rem; }
+.times-badge {
+    display: inline-block; padding: .15rem .55rem; border-radius: 999px;
+    font-size: .8rem; background: var(--bg3); color: var(--text2);
+    border: 1px solid var(--border); margin-right: .35rem;
+}
+.hist-table { width: 100%; border-collapse: collapse; }
+.hist-table td, .hist-table th { border-bottom: 1px solid var(--border); padding: .4rem .6rem; font-size: .85rem; text-align: left; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="flex-center gap-md mb-2" style="justify-content:space-between;flex-wrap:wrap;">
+    <div>
+        <div class="flex-center gap-sm mb-1">
+            <a href="/projects/{{ project.slug }}" class="btn btn-secondary btn-sm">← К проекту</a>
+            <span class="badge" style="background:rgba(108,99,255,.15);color:var(--accent2);">
+                {{ project.name }}
+            </span>
+        </div>
+        <h1 style="margin-bottom:0;">Маркетинговая стратегия</h1>
+        {% if current %}
+        <div class="text-muted text-sm mt-1">
+            Версия {{ current.version }} · Статус: {{ status }}
+            {% if current.created_at %} · {{ current.created_at[:16] }}{% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if flash %}<div class="alert alert-success">{{ flash }}</div>{% endif %}
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+{# Статус-блок (generating/error). При generating — автообновление через HTMX. #}
+{% if status in ('generating', 'error') %}
+    {% include "strategy/_status.html" %}
+{% endif %}
+
+{% if not current %}
+<div class="card">
+    <p class="text-muted">Стратегия ещё не создавалась. Запустите проект «В работу», чтобы её сгенерировать.</p>
+</div>
+{% endif %}
+
+{# ── Активная стратегия ─────────────────────────────────────────────────────── #}
+{% if status == 'active' %}
+
+{% if changes_summary %}
+<div class="alert alert-info">
+    <strong>Что изменилось при пересмотре:</strong> {{ changes_summary }}
+</div>
+{% endif %}
+
+<div class="card mb-2">
+    {% if strategy.summary %}
+    <h3 style="margin-bottom:.4rem;">Резюме</h3>
+    <p style="white-space:pre-wrap;">{{ strategy.summary }}</p>
+    {% endif %}
+    {% if strategy.positioning %}
+    <h3 style="margin:.75rem 0 .4rem;">Позиционирование</h3>
+    <p style="white-space:pre-wrap;">{{ strategy.positioning }}</p>
+    {% endif %}
+</div>
+
+{% for p in platforms %}
+<div class="card strat-platform">
+    <h2 style="margin-bottom:.5rem;">{{ p.name }}</h2>
+    {% if p.goals %}<p><strong>Цели:</strong> {{ p.goals }}</p>{% endif %}
+
+    {% if p.rubrics %}
+    <h4 style="margin:.6rem 0 .3rem;">Рубрики</h4>
+    <ul style="margin:0;padding-left:1.2rem;">
+        {% for r in p.rubrics %}<li class="rubric-item">{{ r }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if p.content_mix %}
+    <h4 style="margin:.6rem 0 .3rem;">Контент-микс (штук в неделю)</h4>
+    <table class="mix-table">
+        <tr><th>Тип</th><th>Шт./нед.</th></tr>
+        {% for m in p.content_mix %}
+        <tr><td>{{ m.label }}</td><td>{{ m.count }}</td></tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+
+    {% if p.best_times %}
+    <p style="margin-top:.5rem;"><strong>Лучшее время:</strong>
+        {% for t in p.best_times %}<span class="times-badge">{{ t }}</span>{% endfor %}
+    </p>
+    {% endif %}
+
+    {% if p.kpi %}<p><strong>KPI:</strong> {{ p.kpi }}</p>{% endif %}
+</div>
+{% endfor %}
+
+{# Действия: редактировать + пересмотреть #}
+<div class="card mb-2">
+    <button type="button" class="btn btn-secondary"
+            onclick="document.getElementById('edit-form').style.display='block';this.style.display='none';">
+        ✏️ Редактировать
+    </button>
+</div>
+
+<div class="card mb-2" id="edit-form" style="display:none;">
+    <h2>Ручная правка стратегии</h2>
+    <form method="post" action="/projects/{{ project.slug }}/strategy/edit">
+        <div class="form-group">
+            <label>Резюме</label>
+            <textarea name="summary" rows="3">{{ strategy.summary or '' }}</textarea>
+        </div>
+        <div class="form-group">
+            <label>Позиционирование</label>
+            <textarea name="positioning" rows="2">{{ strategy.positioning or '' }}</textarea>
+        </div>
+        {% for p in platforms %}
+        <fieldset style="border:1px solid var(--border);border-radius:var(--radius);padding:.75rem;margin-bottom:1rem;">
+            <legend style="padding:0 .4rem;font-weight:600;">{{ p.name }}</legend>
+            <div class="form-group">
+                <label>Цели</label>
+                <input type="text" name="goals_{{ p.platform }}" value="{{ p.goals }}">
+            </div>
+            <div class="form-group">
+                <label>Рубрики (по одной на строку)</label>
+                <textarea name="rubrics_{{ p.platform }}" rows="4">{{ p.rubrics | join('\n') }}</textarea>
+            </div>
+            <div class="form-group">
+                <label>Контент-микс (штук в неделю)</label>
+                <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+                {% for m in p.content_mix %}
+                    <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;">
+                        {{ m.label }}
+                        <input type="number" min="0" name="mix_{{ p.platform }}_{{ m.type }}"
+                               value="{{ m.count }}" style="width:70px;">
+                    </label>
+                {% endfor %}
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Лучшее время (через запятую)</label>
+                <input type="text" name="best_times_{{ p.platform }}" value="{{ p.best_times | join(', ') }}">
+            </div>
+            <div class="form-group">
+                <label>KPI</label>
+                <input type="text" name="kpi_{{ p.platform }}" value="{{ p.kpi }}">
+            </div>
+        </fieldset>
+        {% endfor %}
+        <button type="submit" class="btn btn-success">Сохранить</button>
+    </form>
+</div>
+
+<div class="card mb-2">
+    <h2>🔁 Пересмотреть стратегию</h2>
+    <p class="text-sm text-muted mb-2">
+        ИИ пересоберёт стратегию с учётом свежих метрик и вашего комментария.
+        Текущая версия остаётся активной до готовности новой.
+    </p>
+    <form method="post" action="/projects/{{ project.slug }}/strategy/revise">
+        <div class="form-group">
+            <label for="user_comment">Комментарий для ИИ (необязательно)</label>
+            <textarea id="user_comment" name="user_comment" rows="3"
+                      placeholder="Например: больше видео, меньше текстовых постов; сделать тон легче…"></textarea>
+        </div>
+        <button type="submit" class="btn btn-secondary">🔁 Пересмотреть стратегию</button>
+    </form>
+</div>
+{% endif %}
+
+{# ── История версий ─────────────────────────────────────────────────────────── #}
+{% if history %}
+<div class="card">
+    <h2>История версий</h2>
+    <table class="hist-table">
+        <tr><th>Версия</th><th>Дата</th><th>Статус</th><th>Комментарий</th></tr>
+        {% for h in history %}
+        <tr>
+            <td>v{{ h.version }}</td>
+            <td>{{ h.created_at[:16] if h.created_at else '—' }}</td>
+            <td>{{ h.status }}</td>
+            <td>{{ h.user_comment or '—' }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+{% endblock %}

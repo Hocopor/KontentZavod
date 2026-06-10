@@ -1,0 +1,23 @@
+{# Статус-блок стратегии. Самообновляется через HTMX, пока generating. #}
+<div id="strategy-status"
+     {% if status == 'generating' %}
+     hx-get="/projects/{{ project.slug }}/strategy"
+     hx-trigger="every 5s"
+     hx-swap="outerHTML"
+     {% endif %}>
+{% if status == 'generating' %}
+    <div class="alert alert-info">
+        🧠 Стратегия генерируется… Это занимает до минуты. Страница обновится автоматически.
+    </div>
+{% elif status == 'error' %}
+    <div class="alert alert-error">
+        <strong>Ошибка генерации стратегии</strong>
+        {% if current and current.error_text %}
+        <div class="text-sm mt-1"><code>{{ current.error_text }}</code></div>
+        {% endif %}
+    </div>
+    <form method="post" action="/projects/{{ project.slug }}/strategy/retry" class="mb-2">
+        <button type="submit" class="btn btn-secondary">Повторить</button>
+    </form>
+{% endif %}
+</div>

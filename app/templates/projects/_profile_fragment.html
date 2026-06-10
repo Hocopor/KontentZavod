@@ -1,0 +1,41 @@
+{# HTMX-фрагмент: ответ /projects/generate-profile.
+   Вставляется в #full-form-container вместо кнопок шага 1.
+
+   Переменные:
+     project      — dict с предзаполненными полями (из ИИ или пустые)
+     ai_generated — True если профиль составлен ИИ
+     llm_error    — строка с сообщением об ошибке (если LLMError)
+     step1        — dict {name, description, goals} для повторной попытки
+#}
+<div id="full-form-container">
+
+{% if llm_error %}
+<div class="alert alert-error" style="margin-bottom:1rem;">
+    <strong>Ошибка ИИ:</strong> {{ llm_error }}
+</div>
+<div class="flex gap-sm">
+    <button type="button" class="btn btn-primary"
+            hx-post="/projects/generate-profile"
+            hx-vals='{"name": "{{ step1.name|e }}", "description": "{{ step1.description|e }}", "goals": "{{ step1.goals|e }}"}'
+            hx-target="#full-form-container"
+            hx-swap="outerHTML"
+            hx-indicator="#profile-spinner">
+        🔄 Попробовать ещё раз
+    </button>
+    <button type="button" class="btn btn-secondary"
+            hx-post="/projects/generate-profile"
+            hx-vals='{"name": "{{ step1.name|e }}", "description": "{{ step1.description|e }}", "goals": "{{ step1.goals|e }}", "manual": "1"}'
+            hx-target="#full-form-container"
+            hx-swap="outerHTML">
+        Заполнить вручную
+    </button>
+</div>
+
+{% else %}
+
+{% with form_action="/projects/new", ai_generated=ai_generated, errors=[] %}
+{% include "projects/_form_full.html" %}
+{% endwith %}
+
+{% endif %}
+</div>

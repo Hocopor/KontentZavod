@@ -146,6 +146,15 @@
                 <option value="90" {% if days == 90 %}selected{% endif %}>90 дней</option>
             </select>
         </div>
+        <div class="form-group">
+            <label>Тип контента</label>
+            <select name="content_type">
+                <option value="">Все типы</option>
+                {% for ct, ct_name in content_type_names.items() %}
+                <option value="{{ ct }}" {% if content_type == ct %}selected{% endif %}>{{ ct_name }}</option>
+                {% endfor %}
+            </select>
+        </div>
         <button type="submit" class="btn btn-primary">Применить</button>
     </div>
 </form>
@@ -185,6 +194,37 @@
         <canvas id="barChart"></canvas>
     </div>
 </div>
+
+<!-- Разрез по типам контента -->
+{% if type_breakdown %}
+<div class="card mb-2" style="margin-bottom:1.5rem;">
+    <h2>Средние метрики по типам контента</h2>
+    <table class="top-table">
+        <thead>
+            <tr>
+                <th>Тип</th>
+                <th style="text-align:right;">Публикаций</th>
+                <th style="text-align:right;">Avg просм.</th>
+                <th style="text-align:right;">Avg лайки</th>
+                <th style="text-align:right;">Avg коммент.</th>
+                <th style="text-align:right;">Avg репосты</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in type_breakdown %}
+        <tr>
+            <td><span class="metric-badge">{{ row.type_name }}</span></td>
+            <td style="text-align:right;">{{ row.pub_count }}</td>
+            <td style="text-align:right;font-weight:600;">{{ row.avg_views }}</td>
+            <td style="text-align:right;">{{ row.avg_likes }}</td>
+            <td style="text-align:right;">{{ row.avg_comments }}</td>
+            <td style="text-align:right;">{{ row.avg_shares }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
 
 <!-- Топ-5 и анти-топ-5 -->
 {% if top5 %}

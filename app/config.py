@@ -49,6 +49,21 @@ _FIELDS: dict[str, tuple[str, str, str]] = {
     "YOUTUBE_DAILY_LIMIT": ("YOUTUBE_DAILY_LIMIT",  "6",                        "int"),
 }
 
+# Строковые поля, значения которых по своей природе не содержат пробелов
+# (URL, API-ключи). Для них берём только первый токен значения: systemd
+# (EnvironmentFile= в юните) НЕ удаляет inline-комментарии вида
+# «KEY=значение  # пояснение» — без отсечения мусор уезжает в base_url/ключ
+# (реальный случай на проде: 404 от LLM-Router). python-dotenv комментарии
+# режет сам, поэтому локального запуска это не касается.
+# FFMPEG_BIN/FFPROBE_BIN сюда НЕ входят — путь может содержать пробелы.
+_SINGLE_TOKEN_FIELDS = {
+    "LLM_ROUTER_BASE_URL",
+    "LLM_ROUTER_KEY",
+    "FERNET_KEY",
+    "PEXELS_API_KEY",
+    "PIXABAY_API_KEY",
+}
+
 
 class Settings:
     """
@@ -81,10 +96,14 @@ class Settings:
         # 2. os.environ (monkeypatch.setenv)
         env_var, default, kind = _FIELDS[name]
         raw = os.environ.get(env_var, default)
+        # bool/int — всегда одиночный токен: отсекаем systemd-хвост «# комментарий»
         if kind == "bool":
-            return raw == "1"
+            return raw.strip().split()[0] == "1" if raw.strip() else False
         if kind == "int":
-            return int(raw)
+            return int(raw.strip().split()[0]) if raw.strip() else int(default)
+        if name in _SINGLE_TOKEN_FIELDS:
+            stripped = raw.strip()
+            return stripped.split()[0] if stripped else ""
         return raw
 
     @property
