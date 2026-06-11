@@ -53,24 +53,43 @@ def _create_project(db, *, platforms=("telegram",), content_types=None,
     return project_id, s
 
 
-def _create_active_strategy(db, project_id, *, strategy_data=None):
-    """Создаёт активную стратегию проекта."""
+# Якорь стратегии v2 — понедельник; недельные слоты считаются от него.
+ANCHOR = "2026-06-15"
+
+
+def _create_active_strategy(db, project_id, *, strategy_data=None, activated_on=ANCHOR):
+    """
+    Создаёт активную стратегию v2 проекта (с фазами и mix).
+
+    По умолчанию: telegram post=4/нед + video=2/нед, vk post=3/нед,
+    одна бессрочная фаза, якорь ANCHOR.
+    """
     if strategy_data is None:
         strategy_data = {
             "summary": "Тест",
             "positioning": "поз",
+            "activated_on": activated_on,
+            "phases": [{
+                "n": 1, "weeks": 10 ** 6,
+                "goal_share": {"attract": 50, "retain": 30, "sell": 20},
+                "mix": {
+                    "telegram": {"post": 4, "video": 2},
+                    "vk": {"post": 3},
+                },
+            }],
             "platforms": {
                 "telegram": {
                     "goals": "цель",
-                    "rubrics": ["Рубрика 1", "Рубрика 2"],
-                    "content_mix": {"post": 3, "video": 2},
+                    "rubrics": [
+                        {"name": "Рубрика 1", "goal": "attract", "description": "desc"},
+                        {"name": "Рубрика 2", "goal": "sell", "description": "desc"},
+                    ],
                     "best_times": ["09:00", "18:00"],
                     "kpi": "охват",
                 },
                 "vk": {
                     "goals": "цель VK",
-                    "rubrics": ["Разбор"],
-                    "content_mix": {"post": 3},
+                    "rubrics": [{"name": "Разбор", "goal": "attract", "description": "d"}],
                     "best_times": ["10:00"],
                     "kpi": "охват VK",
                 },
@@ -83,19 +102,16 @@ def _create_active_strategy(db, project_id, *, strategy_data=None):
     return cur.lastrowid
 
 
-def _fake_plan_json(date_from: str, ctype: str = "post", n: int = 3) -> str:
-    """Генерирует фиксированный JSON плана с n пунктами начиная с date_from."""
-    d = date.fromisoformat(date_from)
+def _fake_plan_json(n: int = 60) -> str:
+    """JSON плана v2 с n элементами по slot_id 1..n (планнер джойнит по slot_id)."""
     items = []
-    for i in range(n):
+    for i in range(1, n + 1):
         items.append({
-            "date": (d + timedelta(days=i)).isoformat(),
-            "time": "09:00",
-            "content_type": ctype,
-            "title": f"Пункт плана {i + 1}",
+            "slot_id": i,
+            "title": f"Пункт плана {i}",
             "brief": {
-                "hook": f"Хук {i + 1}",
-                "outline": f"Структура {i + 1}",
+                "hook": f"Хук {i}",
+                "outline": f"Структура {i}",
                 "cta": "Переходи по ссылке",
                 "keywords": ["тест"],
                 "rubric": "Рубрика 1",
@@ -108,17 +124,15 @@ def _fake_plan_json(date_from: str, ctype: str = "post", n: int = 3) -> str:
 
 
 def test_generate_plan_creates_items_with_fake_llm(patch_env, monkeypatch):
-    """FAKE_LLM возвращает план с датами 2026-06-15..20, типы post/video.
-    При периоде 2026-06-15..2026-06-22 все валидные items вставляются."""
+    """mix telegram = post:4 + video:2 = 6/нед. За одну неделю → 6 пунктов,
+    goal заполнен из слота."""
     _setup_db()
     with get_db() as db:
         project_id, _ = _create_project(db, platforms=("telegram",))
         _create_active_strategy(db, project_id)
 
     from app.pipeline.planner import generate_plan
-    # FAKE_PLAN возвращает 6 items: 4 post + 2 video, даты 15–20 июня
-    # все типы (post, video) включены по умолчанию для telegram
-    count = generate_plan(project_id, "telegram", "2026-06-15", "2026-06-22")
+    count = generate_plan(project_id, "telegram", ANCHOR, "2026-06-21")
     assert count == 6
 
     with get_db() as db:
@@ -129,23 +143,31 @@ def test_generate_plan_creates_items_with_fake_llm(patch_env, monkeypatch):
     assert len(rows) == 6
     statuses = {r["status"] for r in rows}
     assert statuses == {"proposed"}
+    # goal заполнен из слота
+    assert all(r["goal"] for r in rows)
 
 
 def test_generate_plan_filters_out_of_period_dates(patch_env, monkeypatch):
-    """FAKE_LLM возвращает даты 15–20 июня. Период 17–18 → только 2 items."""
+    """Период короче недели → слотов меньше (только даты в окне)."""
     _setup_db()
     with get_db() as db:
         project_id, _ = _create_project(db, platforms=("telegram",))
         _create_active_strategy(db, project_id)
 
     from app.pipeline.planner import generate_plan
+    # Окно 2 дня: 17–18 июня (среда-четверг недели якоря)
     count = generate_plan(project_id, "telegram", "2026-06-17", "2026-06-18")
-    # 17-го: post "Инструмент недели", 18-го: post "5 метрик" — 2 items
-    assert count == 2
+    # post i=2,3 (дни floor(2*7/4)=3→18, floor(3*7/4)=5→20) ... считаем фактически
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT date FROM plan_items WHERE project_id=?", (project_id,)
+        ).fetchall()
+    assert count == len(rows)
+    assert all("2026-06-17" <= r["date"] <= "2026-06-18" for r in rows)
 
 
 def test_generate_plan_filters_disabled_content_types(patch_env, monkeypatch):
-    """video выключен → только post-items из FAKE_PLAN."""
+    """video выключен → только post-слоты (4/нед)."""
     _setup_db()
     with get_db() as db:
         project_id, _ = _create_project(
@@ -156,8 +178,8 @@ def test_generate_plan_filters_disabled_content_types(patch_env, monkeypatch):
         _create_active_strategy(db, project_id)
 
     from app.pipeline.planner import generate_plan
-    count = generate_plan(project_id, "telegram", "2026-06-15", "2026-06-22")
-    # FAKE_PLAN: 4 post + 2 video → только 4 post прошли фильтр
+    count = generate_plan(project_id, "telegram", ANCHOR, "2026-06-21")
+    # mix post=4, video=2 → video выключен → 4 post
     assert count == 4
 
     with get_db() as db:
@@ -196,11 +218,16 @@ def test_generate_plan_no_platform_in_strategy_returns_zero(patch_env):
             strategy_data={
                 "summary": "s",
                 "positioning": "p",
+                "activated_on": ANCHOR,
+                "phases": [{
+                    "n": 1, "weeks": 10 ** 6,
+                    "goal_share": {"attract": 100},
+                    "mix": {"telegram": {"post": 2}},
+                }],
                 "platforms": {
                     "telegram": {
                         "goals": "g",
-                        "rubrics": ["r"],
-                        "content_mix": {"post": 2},
+                        "rubrics": [{"name": "r", "goal": "attract", "description": "d"}],
                         "best_times": ["09:00"],
                         "kpi": "k",
                     }
@@ -209,7 +236,7 @@ def test_generate_plan_no_platform_in_strategy_returns_zero(patch_env):
         )
 
     from app.pipeline.planner import generate_plan
-    count = generate_plan(project_id, "youtube", "2026-06-15", "2026-06-22")
+    count = generate_plan(project_id, "youtube", ANCHOR, "2026-06-22")
     assert count == 0
 
 
@@ -225,12 +252,12 @@ def test_generate_plan_no_enabled_types_returns_zero(patch_env):
         _create_active_strategy(db, project_id)
 
     from app.pipeline.planner import generate_plan
-    count = generate_plan(project_id, "telegram", "2026-06-15", "2026-06-22")
+    count = generate_plan(project_id, "telegram", ANCHOR, "2026-06-22")
     assert count == 0
 
 
 def test_generate_plan_deduplication(patch_env):
-    """Повторный вызов с тем же FAKE-ответом → 0 новых (дедупликация по title)."""
+    """Повторный вызов в том же окне → 0 новых (слоты дедуплены против plan_items)."""
     _setup_db()
     with get_db() as db:
         project_id, _ = _create_project(db, platforms=("telegram",))
@@ -238,16 +265,16 @@ def test_generate_plan_deduplication(patch_env):
 
     from app.pipeline.planner import generate_plan
 
-    count1 = generate_plan(project_id, "telegram", "2026-06-15", "2026-06-22")
+    count1 = generate_plan(project_id, "telegram", ANCHOR, "2026-06-21")
     assert count1 == 6
 
-    # Повторный вызов — те же items, те же titles → 0 новых
-    count2 = generate_plan(project_id, "telegram", "2026-06-15", "2026-06-22")
+    # Повторный вызов — те же слоты (дата+тип+время заняты) → 0 новых
+    count2 = generate_plan(project_id, "telegram", ANCHOR, "2026-06-21")
     assert count2 == 0
 
 
 def test_generate_plan_dedup_different_platform_no_conflict(patch_env):
-    """Тот же title для другой платформы — НЕ дедуп, вставляется."""
+    """Слоты другой платформы независимы — дедуп не срабатывает между платформами."""
     _setup_db()
     with get_db() as db:
         project_id, _ = _create_project(
@@ -257,19 +284,16 @@ def test_generate_plan_dedup_different_platform_no_conflict(patch_env):
         _create_active_strategy(db, project_id)
 
     from app.pipeline.planner import generate_plan
-    count_tg = generate_plan(project_id, "telegram", "2026-06-15", "2026-06-22")
+    count_tg = generate_plan(project_id, "telegram", ANCHOR, "2026-06-21")
     assert count_tg == 6
 
-    # vk: FAKE_PLAN возвращает только post/video.
-    # vk имеет post и video по умолчанию (video default_on=True).
-    # Те же titles что у telegram — но другая platform → дедуп не срабатывает.
-    count_vk = generate_plan(project_id, "vk", "2026-06-15", "2026-06-22")
-    # vk plan_items — независимы от telegram
-    assert count_vk == 6
+    # vk mix = post:3 → 3 слота; независимы от telegram
+    count_vk = generate_plan(project_id, "vk", ANCHOR, "2026-06-21")
+    assert count_vk == 3
 
 
-def test_generate_plan_custom_json_items(patch_env, monkeypatch):
-    """Собственный monkeypatch chat: валидные + невалидные items."""
+def test_generate_plan_uses_slot_fields_not_llm(patch_env, monkeypatch):
+    """date/time/content_type берутся ИЗ СЛОТА, что бы LLM ни вернул в этих полях."""
     _setup_db()
     with get_db() as db:
         project_id, _ = _create_project(db, platforms=("telegram",))
@@ -277,98 +301,72 @@ def test_generate_plan_custom_json_items(patch_env, monkeypatch):
 
     import app.pipeline.planner as planner_mod
 
-    custom_items = [
-        # валидный
-        {
-            "date": "2026-06-15",
-            "time": "09:00",
-            "content_type": "post",
-            "title": "Валидный пост",
-            "brief": {"hook": "h", "outline": "o", "cta": "c",
-                      "keywords": ["k"], "rubric": "r"},
-        },
-        # content_type невалиден для telegram
-        {
-            "date": "2026-06-15",
-            "time": "09:00",
-            "content_type": "short",  # youtube-only тип
-            "title": "Невалидный тип",
-            "brief": {},
-        },
-        # дата вне периода
-        {
-            "date": "2026-07-01",
-            "time": "09:00",
-            "content_type": "post",
-            "title": "Дата вне периода",
-            "brief": {},
-        },
-        # пустой title
-        {
-            "date": "2026-06-16",
-            "time": "09:00",
-            "content_type": "post",
-            "title": "",
-            "brief": {},
-        },
-    ]
-
+    # LLM возвращает мусорные date/content_type/time — планнер их игнорирует
     def fake_chat(messages, purpose=None, json_mode=False, **kw):
-        return json.dumps({"items": custom_items}, ensure_ascii=False)
+        items = [{
+            "slot_id": i,
+            "date": "2099-01-01",          # игнор
+            "content_type": "short",        # игнор
+            "time": "23:59",                # игнор
+            "title": f"Тема {i}",
+            "brief": {"hook": "h", "outline": "o", "cta": "",
+                      "keywords": ["k"], "rubric": "Рубрика 1"},
+        } for i in range(1, 7)]
+        return json.dumps({"items": items}, ensure_ascii=False)
 
     monkeypatch.setattr(planner_mod, "chat", fake_chat)
 
     from app.pipeline.planner import generate_plan
-    count = generate_plan(project_id, "telegram", "2026-06-15", "2026-06-20")
-    # Только 1 валидный item
-    assert count == 1
-
-
-def test_generate_plan_default_time_slot(patch_env, monkeypatch):
-    """item без поля time или с неверным форматом → дефолт '12:00'."""
-    _setup_db()
-    with get_db() as db:
-        project_id, _ = _create_project(db, platforms=("telegram",))
-        _create_active_strategy(db, project_id)
-
-    import app.pipeline.planner as planner_mod
-
-    custom_items = [
-        {
-            "date": "2026-06-15",
-            # time отсутствует
-            "content_type": "post",
-            "title": "Без времени",
-            "brief": {},
-        },
-        {
-            "date": "2026-06-16",
-            "time": "неверный формат",
-            "content_type": "post",
-            "title": "Неверное время",
-            "brief": {},
-        },
-    ]
-
-    def fake_chat(messages, purpose=None, json_mode=False, **kw):
-        return json.dumps({"items": custom_items}, ensure_ascii=False)
-
-    monkeypatch.setattr(planner_mod, "chat", fake_chat)
-
-    from app.pipeline.planner import generate_plan
-    count = generate_plan(project_id, "telegram", "2026-06-15", "2026-06-20")
-    assert count == 2
+    count = generate_plan(project_id, "telegram", ANCHOR, "2026-06-21")
+    assert count == 6
 
     with get_db() as db:
         rows = db.execute(
-            "SELECT time_slot FROM plan_items WHERE project_id=?", (project_id,)
+            "SELECT date, content_type, time_slot FROM plan_items WHERE project_id=?",
+            (project_id,),
         ).fetchall()
-    for row in rows:
-        assert row["time_slot"] == "12:00"
+    # Ни одна дата/тип/время не из LLM-мусора
+    assert all("2026-06-15" <= r["date"] <= "2026-06-21" for r in rows)
+    assert all(r["content_type"] in ("post", "video") for r in rows)
+    assert all(r["time_slot"] != "23:59" for r in rows)
+
+
+def test_generate_plan_missing_slot_ids_placeholder(patch_env, monkeypatch):
+    """LLM вернул половину slot_id → retry → недостающие = плейсхолдеры."""
+    _setup_db()
+    with get_db() as db:
+        project_id, _ = _create_project(db, platforms=("telegram",))
+        _create_active_strategy(db, project_id)
+
+    import app.pipeline.planner as planner_mod
+
+    # Всегда возвращаем только slot_id 1,2,3 (половину из 6) — и в основном, и в retry
+    def fake_chat(messages, purpose=None, json_mode=False, **kw):
+        items = [{
+            "slot_id": i,
+            "title": f"Тема {i}",
+            "brief": {"hook": "h", "outline": "o", "cta": "",
+                      "keywords": ["k"], "rubric": "Рубрика 1"},
+        } for i in (1, 2, 3)]
+        return json.dumps({"items": items}, ensure_ascii=False)
+
+    monkeypatch.setattr(planner_mod, "chat", fake_chat)
+
+    from app.pipeline.planner import generate_plan
+    count = generate_plan(project_id, "telegram", ANCHOR, "2026-06-21")
+    assert count == 6  # все 6 слотов вставлены (часть — плейсхолдеры)
+
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT title, brief FROM plan_items WHERE project_id=?", (project_id,)
+        ).fetchall()
+    placeholders = [r for r in rows if r["title"] == planner_mod._PLACEHOLDER_TITLE]
+    assert placeholders, "должны быть плейсхолдеры по недостающим slot_id"
+    assert all(r["brief"] is None for r in placeholders)
 
 
 def test_generate_plan_retry_on_invalid_json(patch_env, monkeypatch):
-    """Первый ответ — мусор; второй — валидный JSON → items созданы."""
+    """Первый ответ — мусор; второй — валидный JSON → пункты созданы."""
     _setup_db()
     with get_db() as db:
         project_id, _ = _create_project(db, platforms=("telegram",))
@@ -382,14 +380,14 @@ def test_generate_plan_retry_on_invalid_json(patch_env, monkeypatch):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return "мусор не JSON {{{"
-        # retry: возвращаем валидный план
-        return _fake_plan_json("2026-06-15", "post", 2)
+        # retry: валидный план на все слоты
+        return _fake_plan_json(60)
 
     monkeypatch.setattr(planner_mod, "chat", fake_chat)
 
     from app.pipeline.planner import generate_plan
-    count = generate_plan(project_id, "telegram", "2026-06-15", "2026-06-20")
-    assert count == 2
+    count = generate_plan(project_id, "telegram", ANCHOR, "2026-06-21")
+    assert count == 6
     assert call_count["n"] == 2  # был retry
 
 

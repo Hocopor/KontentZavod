@@ -22,8 +22,16 @@ from datetime import date as _date
 from app import catalog
 from app.db import get_db, get_project_settings
 from app.llm import chat, LLMError
-from app.pipeline.prompts import load_prompt
+from app.pipeline.prompts import load_prompt, load_rules
+from app.pipeline.slots import build_slots, week_index, _resolve_anchor
 from app.services.cleanup import delete_content_cascade
+
+# Русские названия дней недели (для слотов в промпте)
+_WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг",
+                "пятница", "суббота", "воскресенье"]
+
+# Плейсхолдер для слотов, по которым LLM не вернул тему
+_PLACEHOLDER_TITLE = "(тема не сгенерирована — нажмите 🔄)"
 
 logger = logging.getLogger(__name__)
 
@@ -359,110 +367,112 @@ def _profile_block(project) -> str:
     return "\n".join(parts) if parts else "Профиль не задан."
 
 
+def _rubrics_block(platform_strategy: dict | None) -> str:
+    """
+    Рубрики платформы списком «• name [goal] — description».
+    Поддерживает легаси-строки (старый формат rubrics: ["Рубрика 1", ...]).
+    """
+    if not isinstance(platform_strategy, dict):
+        return "Рубрики не заданы."
+    rubrics = platform_strategy.get("rubrics")
+    if not isinstance(rubrics, list) or not rubrics:
+        return "Рубрики не заданы."
+    lines: list[str] = []
+    for r in rubrics:
+        if isinstance(r, dict):
+            name = (r.get("name") or "").strip()
+            if not name:
+                continue
+            goal = (r.get("goal") or "").strip()
+            desc = (r.get("description") or "").strip()
+            line = f"• {name}"
+            if goal:
+                line += f" [{goal}]"
+            if desc:
+                line += f" — {desc}"
+            lines.append(line)
+        elif isinstance(r, str) and r.strip():
+            lines.append(f"• {r.strip()}")
+    return "\n".join(lines) if lines else "Рубрики не заданы."
+
+
+def _directives_block(db, project_id: int) -> str:
+    """Активные директивы проекта компактным текстом («• текст [scope]»)."""
+    rows = db.execute(
+        "SELECT text, scope FROM directives "
+        "WHERE project_id=? AND status='active' ORDER BY id",
+        (project_id,),
+    ).fetchall()
+    if not rows:
+        return "Нет."
+    return "\n".join(f"• {(r['text'] or '').strip()} [{r['scope']}]" for r in rows)
+
+
+def _slot_for_prompt(slot_id: int, slot: dict, anchor: _date) -> dict:
+    """Слот в формате для LLM-промпта (с русским днём недели)."""
+    try:
+        d = _date.fromisoformat(slot["date"])
+        weekday = _WEEKDAYS_RU[d.weekday()]
+    except (ValueError, KeyError):
+        weekday = ""
+    return {
+        "slot_id": slot_id,
+        "date": slot["date"],
+        "weekday": weekday,
+        "content_type": slot["content_type"],
+        "goal": slot.get("goal", ""),
+    }
+
+
 # ─── Основная функция ─────────────────────────────────────────────────────────
 
 
-def generate_plan_filtered(
+def _build_prompt_for_group(
+    db,
     project_id: int,
     platform: str,
-    date_from: str,
-    date_to: str,
-    only_content_type: str | None = None,
-) -> int:
-    """
-    Генерирует контент-план с опциональной фильтрацией по типу контента.
-
-    При only_content_type != None в промпт передаётся только этот тип, и
-    вставляются только items с данным content_type.
-
-    Args:
-        project_id:        ID проекта в БД.
-        platform:          Ключ платформы.
-        date_from:         Начало периода YYYY-MM-DD.
-        date_to:           Конец периода YYYY-MM-DD.
-        only_content_type: Если задан — генерировать только для этого типа.
-
-    Returns:
-        Число созданных пунктов плана.
-
-    Raises:
-        LLMError: при ошибке LLM.
-    """
-    with get_db() as db:
-        project = db.execute(
-            "SELECT * FROM projects WHERE id=?", (project_id,)
-        ).fetchone()
-        if project is None:
-            logger.warning("generate_plan_filtered: project_id=%d не найден", project_id)
-            return 0
-
-        strategy_row = _get_active_strategy(db, project_id)
-        if strategy_row is None:
-            logger.warning(
-                "generate_plan_filtered: project_id=%d — нет активной стратегии", project_id
-            )
-            return 0
-
-        try:
-            strategy_data = json.loads(strategy_row["strategy"]) if strategy_row["strategy"] else {}
-        except (json.JSONDecodeError, TypeError):
-            strategy_data = {}
-        platforms_section = strategy_data.get("platforms", {})
-        platform_strategy = platforms_section.get(platform)
-        if platform_strategy is None:
-            logger.warning(
-                "generate_plan_filtered: project_id=%d, platform=%s — нет секции в стратегии",
-                project_id, platform,
-            )
-            return 0
-
-        enabled_types = _get_enabled_types(db, project_id, platform)
-
-        # При точечной перегенерации — оставить только запрошенный тип
-        if only_content_type is not None:
-            if only_content_type not in enabled_types or not enabled_types[only_content_type]:
-                logger.warning(
-                    "generate_plan_filtered: content_type=%r не включён для %s",
-                    only_content_type, platform,
-                )
-                return 0
-            # Фильтруем enabled_types до одного
-            enabled_types = {only_content_type: True}
-
-        active_types = {t for t, on in enabled_types.items() if on}
-        if not active_types:
-            logger.warning(
-                "generate_plan_filtered: project_id=%d, platform=%s — нет включённых типов",
-                project_id, platform,
-            )
-            return 0
-
-        learnings_text = _get_learnings(db, project_id)
-        used_topics_text = _get_used_topics(db, project_id, platform)
-        strategy_id = strategy_row["id"]
-
+    platform_strategy: dict | None,
+    project,
+    prompt_slots: list[dict],
+    prefix: str = "",
+) -> list[dict]:
+    """Собрать messages для одной группы слотов (одна неделя)."""
+    rubrics_text = _rubrics_block(platform_strategy)
+    directives_text = _directives_block(db, project_id)
+    settings = get_project_settings(project["settings"])
+    rules_text = load_rules(settings)
+    learnings_text = _get_learnings(db, project_id)
+    used_topics_text = _get_used_topics(db, project_id, platform)
     profile_text = _profile_block(project)
-    platform_strategy_text = json.dumps(platform_strategy, ensure_ascii=False, indent=2)
-    content_types_text = _content_types_block(platform, enabled_types)
+
+    slots_json = json.dumps(prompt_slots, ensure_ascii=False, indent=2)
+    if prefix:
+        slots_json = prefix + "\n\n" + slots_json
 
     prompt = load_prompt(
         "plan",
+        RULES=rules_text,
+        DIRECTIVES=directives_text,
         PROFILE=profile_text,
         PLATFORM=platform,
-        PLATFORM_STRATEGY=platform_strategy_text,
-        CONTENT_TYPES=content_types_text,
-        DATE_FROM=date_from,
-        DATE_TO=date_to,
+        RUBRICS=rubrics_text,
         LEARNINGS=learnings_text,
         USED_TOPICS=used_topics_text,
+        SLOTS=slots_json,
     )
-    messages = [{"role": "user", "content": prompt}]
+    return [{"role": "user", "content": prompt}]
 
+
+def _chat_plan_with_retry(messages: list[dict]) -> dict[int, dict]:
+    """
+    Один LLM-вызов плана + 1 retry при невалидном JSON.
+    Возвращает {slot_id: item} по ответу модели.
+    """
     raw = chat(messages, purpose="plan", json_mode=True)
     try:
         items = _parse_plan_json(raw)
     except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("generate_plan_filtered: первая попытка парсинга провалилась (%s), retry", exc)
+        logger.warning("plan: первая попытка парсинга провалилась (%s), retry", exc)
         retry_messages = messages + [
             {"role": "assistant", "content": raw},
             {
@@ -476,92 +486,45 @@ def generate_plan_filtered(
         raw2 = chat(retry_messages, purpose="plan", json_mode=True)
         items = _parse_plan_json(raw2)
 
-    try:
-        df = _date.fromisoformat(date_from)
-        dt = _date.fromisoformat(date_to)
-    except ValueError:
-        logger.error(
-            "generate_plan_filtered: неверный формат дат: %s — %s", date_from, date_to
-        )
-        return 0
-
-    inserted = 0
-    with get_db() as db:
-        for item in items:
-            raw_date = (item.get("date") or "").strip()
-            try:
-                item_date = _date.fromisoformat(raw_date)
-            except ValueError:
-                continue
-            if item_date < df or item_date > dt:
-                continue
-
-            ctype = (item.get("content_type") or "").strip()
-            if not catalog.is_valid(platform, ctype):
-                continue
-            if ctype not in active_types:
-                continue
-
-            title = (item.get("title") or "").strip()
-            if not title:
-                continue
-
-            time_slot = (item.get("time") or "12:00").strip()
-            if not re.match(r"^\d{2}:\d{2}$", time_slot):
-                time_slot = "12:00"
-
-            brief = item.get("brief")
-            brief_json = json.dumps(brief, ensure_ascii=False) if isinstance(brief, dict) else None
-
-            existing = db.execute(
-                "SELECT id FROM plan_items "
-                "WHERE project_id=? AND platform=? AND content_type=? AND date=? AND title=?",
-                (project_id, platform, ctype, raw_date, title),
-            ).fetchone()
-            if existing is not None:
-                continue
-
-            db.execute(
-                """
-                INSERT INTO plan_items
-                    (project_id, strategy_id, platform, content_type, date, time_slot,
-                     title, brief, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed')
-                """,
-                (project_id, strategy_id, platform, ctype, raw_date, time_slot, title, brief_json),
-            )
-            inserted += 1
-
-    logger.info(
-        "generate_plan_filtered: project_id=%d, platform=%s, type=%s, %s–%s → %d пунктов",
-        project_id, platform, only_content_type or "all", date_from, date_to, inserted,
-    )
-    return inserted
+    by_id: dict[int, dict] = {}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        sid = it.get("slot_id")
+        try:
+            sid = int(sid)
+        except (TypeError, ValueError):
+            continue
+        by_id[sid] = it
+    return by_id
 
 
-def generate_plan(
+def _generate_plan_impl(
     project_id: int,
     platform: str,
     date_from: str,
     date_to: str,
+    only_content_type: str | None = None,
 ) -> int:
     """
-    Генерирует контент-план для проекта на заданной платформе и период.
+    Планнер v2: количество слотов задаёт КОД (build_slots по стратегии),
+    LLM наполняет каждый слот темой/брифом. Понедельный цикл по якорю фаз.
 
     Args:
-        project_id: ID проекта в БД.
-        platform:   Ключ платформы (telegram, vk, youtube, instagram, dzen).
-        date_from:  Начало периода YYYY-MM-DD (включительно).
-        date_to:    Конец периода YYYY-MM-DD (включительно).
+        project_id:        ID проекта.
+        platform:          ключ платформы.
+        date_from:         начало периода YYYY-MM-DD.
+        date_to:           конец периода YYYY-MM-DD.
+        only_content_type: если задан — только этот тип.
 
     Returns:
-        Число созданных пунктов плана (0 если нет стратегии/платформы/типов).
+        Число вставленных plan_items.
 
     Raises:
-        LLMError: при ошибке LLM после retry (пробрасывается — ловит brain.py).
+        LLMError: ошибка LLM конкретной группы логируется и не прерывает
+                  остальные группы (вставленное не откатывается).
     """
     with get_db() as db:
-        # Загружаем проект
         project = db.execute(
             "SELECT * FROM projects WHERE id=?", (project_id,)
         ).fetchone()
@@ -569,15 +532,11 @@ def generate_plan(
             logger.warning("generate_plan: project_id=%d не найден", project_id)
             return 0
 
-        # Активная стратегия
         strategy_row = _get_active_strategy(db, project_id)
         if strategy_row is None:
-            logger.warning(
-                "generate_plan: project_id=%d — нет активной стратегии", project_id
-            )
+            logger.warning("generate_plan: project_id=%d — нет активной стратегии", project_id)
             return 0
 
-        # Секция платформы в стратегии
         try:
             strategy_data = json.loads(strategy_row["strategy"]) if strategy_row["strategy"] else {}
         except (json.JSONDecodeError, TypeError):
@@ -591,143 +550,192 @@ def generate_plan(
             )
             return 0
 
-        # Включённые типы
-        enabled_types = _get_enabled_types(db, project_id, platform)
-        active_types = {t for t, on in enabled_types.items() if on}
-        if not active_types:
-            logger.warning(
-                "generate_plan: project_id=%d, platform=%s — нет включённых типов",
-                project_id, platform,
-            )
-            return 0
-
-        # Learnings и использованные темы
-        learnings_text = _get_learnings(db, project_id)
-        used_topics_text = _get_used_topics(db, project_id, platform)
-
         strategy_id = strategy_row["id"]
 
-    # Строим промпт
-    profile_text = _profile_block(project)
-    platform_strategy_text = json.dumps(platform_strategy, ensure_ascii=False, indent=2)
-    content_types_text = _content_types_block(platform, enabled_types)
+        # Якорь фаз — для группировки слотов по неделям (тот же расчёт, что в slots.py)
+        created_at = None
+        try:
+            created_at = strategy_row["created_at"]
+        except (KeyError, IndexError):
+            created_at = None
+        anchor = _resolve_anchor(strategy_data, created_at)
 
-    prompt = load_prompt(
-        "plan",
-        PROFILE=profile_text,
-        PLATFORM=platform,
-        PLATFORM_STRATEGY=platform_strategy_text,
-        CONTENT_TYPES=content_types_text,
-        DATE_FROM=date_from,
-        DATE_TO=date_to,
-        LEARNINGS=learnings_text,
-        USED_TOPICS=used_topics_text,
-    )
-    messages = [{"role": "user", "content": prompt}]
+        # Слоты (детерминированно)
+        slots = build_slots(db, project_id, platform, date_from, date_to, only_content_type)
 
-    # LLM-вызов + retry
-    raw = chat(messages, purpose="plan", json_mode=True)
-    try:
-        items = _parse_plan_json(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("generate_plan: первая попытка парсинга провалилась (%s), retry", exc)
-        retry_messages = messages + [
-            {"role": "assistant", "content": raw},
-            {
-                "role": "user",
-                "content": (
-                    f"Ошибка парсинга JSON: {exc}. Ответь ТОЛЬКО валидным JSON-объектом "
-                    'вида {"items": [...]} без пояснений и без markdown-фенсов.'
-                ),
-            },
-        ]
-        raw2 = chat(retry_messages, purpose="plan", json_mode=True)
-        items = _parse_plan_json(raw2)
-        # LLMError пробрасывается наружу если retry тоже невалидный
-
-    # Вставляем в БД с валидацией и дедупликацией
-    try:
-        df = _date.fromisoformat(date_from)
-        dt = _date.fromisoformat(date_to)
-    except ValueError:
-        logger.error(
-            "generate_plan: неверный формат дат: %s — %s", date_from, date_to
-        )
+    if not slots:
         return 0
 
+    # Группируем слоты по неделям якоря; slot_id с 1 ВНУТРИ группы
+    groups: dict[int, list[dict]] = {}
+    for slot in slots:
+        try:
+            d = _date.fromisoformat(slot["date"])
+        except ValueError:
+            continue
+        k = week_index(anchor, d)
+        groups.setdefault(k, []).append(slot)
+
+    # Для каждой группы: один LLM-вызов; результат — заполненные слоты
+    filled: list[tuple[dict, dict | None]] = []
+
+    for k in sorted(groups.keys()):
+        group = groups[k]
+        group.sort(key=lambda s: (s["date"], s["time_slot"]))
+        id_to_slot = {i + 1: group[i] for i in range(len(group))}
+
+        with get_db() as db:
+            prompt_slots = [
+                _slot_for_prompt(sid, id_to_slot[sid], anchor)
+                for sid in sorted(id_to_slot)
+            ]
+            messages = _build_prompt_for_group(
+                db, project_id, platform, platform_strategy, project, prompt_slots
+            )
+
+        try:
+            by_id = _chat_plan_with_retry(messages)
+        except LLMError as exc:
+            logger.warning(
+                "generate_plan: LLMError в группе недели %d (project=%d platform=%s): %s "
+                "— пропуск группы",
+                k, project_id, platform, exc,
+            )
+            continue
+
+        # Джойн по slot_id; недостающие/пустые — собрать для повторного запроса
+        results: dict[int, dict | None] = {}
+        missing_ids: list[int] = []
+        for sid in sorted(id_to_slot):
+            item = by_id.get(sid)
+            title = (item.get("title") or "").strip() if isinstance(item, dict) else ""
+            if isinstance(item, dict) and title:
+                results[sid] = item
+            else:
+                missing_ids.append(sid)
+
+        # Один повторный chat только по недостающим слотам
+        if missing_ids:
+            with get_db() as db:
+                retry_prompt_slots = [
+                    _slot_for_prompt(sid, id_to_slot[sid], anchor) for sid in missing_ids
+                ]
+                retry_messages = _build_prompt_for_group(
+                    db, project_id, platform, platform_strategy, project,
+                    retry_prompt_slots,
+                    prefix="Это повторный запрос — предыдущий ответ пропустил эти слоты.",
+                )
+            try:
+                retry_by_id = _chat_plan_with_retry(retry_messages)
+            except LLMError as exc:
+                logger.warning(
+                    "generate_plan: LLMError в retry группы недели %d: %s", k, exc
+                )
+                retry_by_id = {}
+            for sid in missing_ids:
+                item = retry_by_id.get(sid)
+                title = (item.get("title") or "").strip() if isinstance(item, dict) else ""
+                results[sid] = item if (isinstance(item, dict) and title) else None
+
+        for sid in sorted(id_to_slot):
+            filled.append((id_to_slot[sid], results.get(sid)))
+
+    if not filled:
+        return 0
+
+    # Вставка plan_items: date/time_slot/content_type/goal — ИЗ СЛОТА, не из LLM
     inserted = 0
     with get_db() as db:
-        for item in items:
-            # Валидация даты
-            raw_date = (item.get("date") or "").strip()
-            try:
-                item_date = _date.fromisoformat(raw_date)
-            except ValueError:
-                logger.debug("generate_plan: пропуск item с неверной датой %r", raw_date)
-                continue
-            if item_date < df or item_date > dt:
-                logger.debug(
-                    "generate_plan: пропуск item дата %s вне периода [%s, %s]",
-                    raw_date, date_from, date_to,
-                )
-                continue
+        for slot, item in filled:
+            ctype = slot["content_type"]
+            slot_date = slot["date"]
+            time_slot = slot["time_slot"]
+            goal = slot.get("goal")
 
-            # Валидация content_type
-            ctype = (item.get("content_type") or "").strip()
-            if not catalog.is_valid(platform, ctype):
-                logger.debug(
-                    "generate_plan: пропуск item content_type=%r невалиден для %s",
-                    ctype, platform,
+            if isinstance(item, dict):
+                title = (item.get("title") or "").strip()
+                brief = item.get("brief")
+                brief_json = (
+                    json.dumps(brief, ensure_ascii=False) if isinstance(brief, dict) else None
                 )
-                continue
-            if ctype not in active_types:
-                logger.debug(
-                    "generate_plan: пропуск item content_type=%r не включён для %s",
-                    ctype, platform,
-                )
-                continue
-
-            # Валидация title
-            title = (item.get("title") or "").strip()
+            else:
+                title = ""
+                brief_json = None
             if not title:
-                logger.debug("generate_plan: пропуск item с пустым title")
-                continue
+                title = _PLACEHOLDER_TITLE
+                brief_json = None
 
-            # Время по умолчанию
-            time_slot = (item.get("time") or "12:00").strip()
-            if not re.match(r"^\d{2}:\d{2}$", time_slot):
-                time_slot = "12:00"
-
-            # Brief
-            brief = item.get("brief")
-            brief_json = json.dumps(brief, ensure_ascii=False) if isinstance(brief, dict) else None
-
-            # Дедупликация: не вставлять если уже есть такой же
+            # Страховочный дедуп по (project, platform, content_type, date, time_slot)
             existing = db.execute(
                 "SELECT id FROM plan_items "
-                "WHERE project_id=? AND platform=? AND content_type=? AND date=? AND title=?",
-                (project_id, platform, ctype, raw_date, title),
+                "WHERE project_id=? AND platform=? AND content_type=? AND date=? AND time_slot=? "
+                "AND status != 'rejected'",
+                (project_id, platform, ctype, slot_date, time_slot),
             ).fetchone()
             if existing is not None:
-                logger.debug(
-                    "generate_plan: дедуп — пропуск duplicate %s %s %s «%s»",
-                    raw_date, platform, ctype, title,
-                )
                 continue
 
             db.execute(
                 """
                 INSERT INTO plan_items
                     (project_id, strategy_id, platform, content_type, date, time_slot,
-                     title, brief, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed')
+                     title, brief, goal, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed')
                 """,
-                (project_id, strategy_id, platform, ctype, raw_date, time_slot, title, brief_json),
+                (project_id, strategy_id, platform, ctype, slot_date, time_slot,
+                 title, brief_json, goal),
             )
             inserted += 1
 
     logger.info(
-        "generate_plan: project_id=%d, platform=%s, %s–%s → %d пунктов",
-        project_id, platform, date_from, date_to, inserted,
+        "generate_plan: project_id=%d, platform=%s, type=%s, %s–%s → %d пунктов",
+        project_id, platform, only_content_type or "all", date_from, date_to, inserted,
     )
     return inserted
+
+
+def generate_plan_filtered(
+    project_id: int,
+    platform: str,
+    date_from: str,
+    date_to: str,
+    only_content_type: str | None = None,
+) -> int:
+    """
+    Генерирует контент-план v2 с опциональной фильтрацией по типу контента.
+
+    Количество публикаций задаёт КОД (build_slots по активной стратегии),
+    LLM лишь наполняет слоты темами. При only_content_type генерируются
+    только слоты этого типа.
+
+    Returns:
+        Число созданных пунктов плана.
+
+    Raises:
+        LLMError: пробрасывается, если возникла вне обработки группы.
+    """
+    return _generate_plan_impl(
+        project_id, platform, date_from, date_to, only_content_type
+    )
+
+
+def generate_plan(
+    project_id: int,
+    platform: str,
+    date_from: str,
+    date_to: str,
+) -> int:
+    """
+    Генерирует контент-план v2 для проекта на платформе и периоде.
+
+    Тонкая обёртка над generate_plan_filtered без фильтра по типу.
+
+    Returns:
+        Число созданных пунктов плана (0 если нет стратегии/слотов).
+
+    Raises:
+        LLMError: пробрасывается, если возникла вне обработки группы.
+    """
+    return _generate_plan_impl(project_id, platform, date_from, date_to, None)
+
+

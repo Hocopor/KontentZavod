@@ -567,23 +567,26 @@ class TestFakeLLM:
                     )
 
     def test_plan_structure(self, patch_env):
-        """purpose='plan' → JSON с массивом items с нужными полями."""
+        """purpose='plan' v2 → JSON items с slot_id/title/brief (без date/type)."""
         data = self._chat("plan")
         assert "items" in data
         items = data["items"]
         assert len(items) >= 5, f"Ожидали ≥5 items, получено {len(items)}"
 
+        slot_ids = set()
         for item in items:
-            assert "date" in item
-            assert "time" in item
-            assert "content_type" in item
+            assert "slot_id" in item
             assert "title" in item
             assert "brief" in item
+            slot_ids.add(item["slot_id"])
 
             brief = item["brief"]
             for key in ("hook", "outline", "cta", "keywords", "rubric"):
                 assert key in brief, f"Отсутствует ключ '{key}' в brief"
             assert isinstance(brief["keywords"], list)
+
+        # slot_id уникальны (планнер джойнит по ним)
+        assert len(slot_ids) == len(items)
 
     def test_item_post_structure(self, patch_env):
         """purpose='item_post' → JSON с title, text, hashtags, features."""
