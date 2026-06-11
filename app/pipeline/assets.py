@@ -3,28 +3,28 @@
 
 Поддерживаемые шаблоны:
   video_footage  — вертикальные видеофутажи (Pexels Videos → Pixabay Videos → картинка)
-  video_slideshow — статичные картинки через Pollinations.ai (без ключа)
+  video_slideshow — статичные картинки (без Pollinations, он стал платным)
 
 Картинки для постов и историй:
   fetch_image(keywords, dest) — единая цепочка:
-    1. Pollinations.ai (если POLLINATIONS_TOKEN задан)
-    2. Pexels Photos API
-    3. Pixabay Photos API
-    4. False
+    1. Pexels Photos API
+    2. Pixabay Photos API
+    3. Openverse (без ключа)
+    4. Wikimedia Commons (без ключа)
+    5. False
 
 FAKE_ASSETS=1 → плейсхолдеры через ffmpeg lavfi без сети.
 
 Прокси-фейловер (для РФ-серверов):
   _http_get и _download_stream сначала пробуют прямой запрос, при 402/403/429
-  или сетевых ошибках — перебирают активные HTTP-прокси из пула proxies.py.
+  или сетевых ошибках — перебирают активные прокси из пула proxies.py (http и socks5).
+  Ответ 402 от прокси = прокси сдох (исчерпан тариф провайдера) → следующий прокси.
 """
 import json
 import logging
 import random
 import subprocess
 from pathlib import Path
-from urllib.parse import quote
-
 import httpx
 
 from app.config import settings
@@ -44,7 +44,8 @@ _PEXELS_VIDEO_URL = "https://api.pexels.com/videos/search"
 _PEXELS_PHOTO_URL = "https://api.pexels.com/v1/search"
 _PIXABAY_VIDEO_URL = "https://pixabay.com/api/videos/"
 _PIXABAY_PHOTO_URL = "https://pixabay.com/api/"
-_POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"
+_OPENVERSE_PHOTO_URL = "https://api.openverse.org/v1/images/"
+_WIKIMEDIA_API_URL = "https://commons.wikimedia.org/w/api.php"
 
 _TIMEOUT = 60
 _MAX_RETRIES = 1
@@ -65,10 +66,11 @@ def _scene_filename(idx: int, ext: str) -> str:
     return f"scene_{idx + 1:02d}.{ext}"
 
 
-def _get_http_proxies() -> list[str]:
+def _get_pool_proxies() -> list[str]:
     """
-    Вернуть список URL активных HTTP-прокси из пула (socks5 пропускаются).
+    Вернуть список URL активных прокси из пула (http и socks5).
     Graceful: возвращает [] при отсутствии таблицы или любой ошибке БД.
+    socks5 поддерживается через httpx[socks] (socksio).
     """
     try:
         from app.db import get_db  # noqa: PLC0415
@@ -76,10 +78,7 @@ def _get_http_proxies() -> list[str]:
 
         with get_db() as db:
             proxies = list_active_proxies(db)
-        return [
-            p["url"] for p in proxies
-            if not p["url"].lower().startswith("socks5://")
-        ]
+        return [p["url"] for p in proxies]
     except Exception as exc:  # noqa: BLE001
         logger.debug("Не удалось загрузить прокси для assets: %s", exc)
         return []
@@ -92,7 +91,8 @@ def _http_get(url: str, headers: dict | None = None, params: dict | None = None)
     Алгоритм:
       1. Прямой запрос (с 1 ретраем при сетевых ошибках).
       2. При сетевых ошибках (TransportError/TimeoutException) или HTTP 402/403/429
-         — перебор активных HTTP-прокси пула (socks5 пропускаются), по одной попытке.
+         — перебор прокси пула (http и socks5), по одной попытке.
+         Ответ 402 через прокси = прокси сдох (исчерпан тариф) → следующий прокси.
       3. Если всё провалилось — raise последней ошибки.
     """
     _headers = headers or {}
@@ -123,10 +123,22 @@ def _http_get(url: str, headers: dict | None = None, params: dict | None = None)
     # Попытки через прокси
     from app.services.proxies import mask_proxy_url  # noqa: PLC0415
 
-    for proxy_url in _get_http_proxies():
+    for proxy_url in _get_pool_proxies():
         try:
             with httpx.Client(proxy=proxy_url, timeout=_TIMEOUT) as client:
                 resp = client.get(url, headers=_headers, params=_params, follow_redirects=True)
+            # 402 через прокси — прокси сдох (исчерпан тариф провайдера)
+            if resp.status_code == 402:
+                logger.warning(
+                    "GET через прокси %s → 402 (тариф прокси исчерпан), следующий прокси",
+                    mask_proxy_url(proxy_url),
+                )
+                last_exc = httpx.HTTPStatusError(
+                    "HTTP 402 via proxy",
+                    request=resp.request,
+                    response=resp,
+                )
+                continue
             masked = mask_proxy_url(proxy_url)
             logger.info("GET %s скачан через прокси %s", url, masked)
             return resp
@@ -147,7 +159,8 @@ def _download_stream(url: str, dest: Path, headers: dict | None = None) -> None:
     Алгоритм:
       1. Прямая попытка (с 1 ретраем при сетевых ошибках / HTTPStatusError).
       2. При сетевых ошибках или HTTPStatusError (вкл. 402/403/429)
-         — перебор активных HTTP-прокси пула, по одной попытке каждый.
+         — перебор прокси пула (http и socks5), по одной попытке каждый.
+         Ответ 402 через прокси = прокси сдох (исчерпан тариф) → следующий прокси.
       3. Если всё провалилось — raise последней ошибки.
     """
     _headers = headers or {}
@@ -172,17 +185,32 @@ def _download_stream(url: str, dest: Path, headers: dict | None = None) -> None:
     # Попытки через прокси
     from app.services.proxies import mask_proxy_url  # noqa: PLC0415
 
-    for proxy_url in _get_http_proxies():
+    for proxy_url in _get_pool_proxies():
         try:
+            proxy_ok = False
             with httpx.Client(proxy=proxy_url, timeout=_TIMEOUT) as client:
                 with client.stream("GET", url, headers=_headers, follow_redirects=True) as resp:
-                    resp.raise_for_status()
-                    with dest.open("wb") as f:
-                        for chunk in resp.iter_bytes(chunk_size=65536):
-                            f.write(chunk)
-            masked = mask_proxy_url(proxy_url)
-            logger.info("Скачивание %s выполнено через прокси %s", url, masked)
-            return
+                    # 402 через прокси = прокси сдох (исчерпан тариф провайдера)
+                    if resp.status_code == 402:
+                        logger.warning(
+                            "Скачивание через прокси %s → 402 (тариф исчерпан), следующий прокси",
+                            mask_proxy_url(proxy_url),
+                        )
+                        last_exc = httpx.HTTPStatusError(
+                            "HTTP 402 via proxy",
+                            request=resp.request,
+                            response=resp,
+                        )
+                    else:
+                        resp.raise_for_status()
+                        with dest.open("wb") as f:
+                            for chunk in resp.iter_bytes(chunk_size=65536):
+                                f.write(chunk)
+                        proxy_ok = True
+            if proxy_ok:
+                masked = mask_proxy_url(proxy_url)
+                logger.info("Скачивание %s выполнено через прокси %s", url, masked)
+                return
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Прокси %s не помог для скачивания %s: %s",
@@ -335,57 +363,6 @@ def _fetch_pixabay_video(query: str, dest: Path) -> bool:
     return False
 
 
-# ─── Pollinations.ai (картинка без ключа) ─────────────────────────────────────
-
-
-def _fetch_pollinations_image(keywords: list[str], dest: Path) -> bool:
-    """
-    Генерация вертикальной картинки через Pollinations.ai.
-
-    Промпт: keywords + ", vertical photo, no text".
-
-    Порядок попыток:
-      1. С nologo=true (+ токен из POLLINATIONS_TOKEN если задан).
-      2. При 402 — повтор без nologo=true (анонимный тир может требовать лого).
-      3. Обе попытки используют прокси-фейловер через _download_stream.
-
-    Возвращает True при успехе.
-    """
-    prompt_text = ", ".join(keywords) + ", vertical photo, no text"
-    base_url = _POLLINATIONS_URL.format(prompt=quote(prompt_text))
-
-    # Токен (опциональный) — снимает анонимный IP-лимит
-    token = settings.POLLINATIONS_TOKEN
-    token_param = f"&token={token}" if token else ""
-
-    urls_to_try = [
-        base_url + f"?width=1080&height=1920&nologo=true{token_param}",
-        base_url + f"?width=1080&height=1920{token_param}",
-    ]
-
-    for attempt_idx, full_url in enumerate(urls_to_try):
-        try:
-            _download_stream(full_url, dest)
-            if attempt_idx > 0:
-                logger.info("Pollinations: сгенерирована картинка (без nologo) → %s", dest.name)
-            else:
-                logger.info("Pollinations: сгенерирована картинка → %s", dest.name)
-            return True
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 402 and attempt_idx == 0:
-                logger.warning(
-                    "Pollinations: 402 с nologo=true — повторяю без nologo (анонимный лимит)"
-                )
-                continue
-            logger.warning("Pollinations: HTTP-ошибка %s: %s", exc.response.status_code, exc)
-            return False
-        except Exception as exc:
-            logger.warning("Pollinations: ошибка генерации: %s", exc)
-            return False
-
-    return False
-
-
 # ─── Pexels Photos ────────────────────────────────────────────────────────────
 
 
@@ -486,6 +463,120 @@ def _fetch_pixabay_photo(query: str, dest: Path) -> bool:
     return False
 
 
+# ─── Openverse (без ключа) ────────────────────────────────────────────────────
+
+
+def _fetch_openverse_photo(query: str, dest: Path) -> bool:
+    """
+    Поиск фото в Openverse (Creative Commons).
+
+    GET https://api.openverse.org/v1/images/?q=query&page_size=10 — без ключа.
+    Предпочитает вертикальные (height > width), фоллбэк — первый результат.
+    Возвращает True при успехе.
+    """
+    try:
+        resp = _http_get(
+            _OPENVERSE_PHOTO_URL,
+            params={"q": query, "page_size": 10},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Openverse API ошибка: %s", exc)
+        return False
+
+    results = data.get("results", [])
+    if not results:
+        logger.info("Openverse: нет результатов по запросу '%s'", query)
+        return False
+
+    # Предпочитаем вертикальные (height > width)
+    vertical = [r for r in results if r.get("height", 0) > r.get("width", 0)]
+    chosen = vertical[0] if vertical else results[0]
+    url = chosen.get("url")
+    if not url:
+        logger.warning("Openverse: нет url в результате для '%s'", query)
+        return False
+
+    try:
+        _download_stream(url, dest)
+        logger.info("Openverse: скачано фото '%s' → %s", query, dest.name)
+        return True
+    except Exception as exc:
+        logger.warning("Openverse: ошибка скачивания: %s", exc)
+        return False
+
+
+# ─── Wikimedia Commons (без ключа) ───────────────────────────────────────────
+
+# Обязательный User-Agent для Wikimedia (403 без осмысленного UA)
+_WIKIMEDIA_USER_AGENT = "KontentZavod/1.0 (https://github.com/Hocopor/KontentZavod)"
+
+
+def _fetch_wikimedia_photo(query: str, dest: Path) -> bool:
+    """
+    Поиск фото в Wikimedia Commons через MediaWiki API.
+
+    Использует generator=search с filetype:bitmap, prop=imageinfo, iiurlwidth=1080.
+    ОБЯЗАТЕЛЕН заголовок User-Agent — Wikimedia отвечает 403 без него.
+    Предпочитает вертикальные (height > width), качает thumburl (1080px).
+    Возвращает True при успехе.
+    """
+    try:
+        resp = _http_get(
+            _WIKIMEDIA_API_URL,
+            headers={"User-Agent": _WIKIMEDIA_USER_AGENT},
+            params={
+                "action": "query",
+                "format": "json",
+                "generator": "search",
+                "gsrsearch": f"filetype:bitmap {query}",
+                "gsrnamespace": "6",
+                "gsrlimit": "10",
+                "prop": "imageinfo",
+                "iiprop": "url|size",
+                "iiurlwidth": "1080",
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Wikimedia API ошибка: %s", exc)
+        return False
+
+    pages = data.get("query", {}).get("pages", {})
+    if not pages:
+        logger.info("Wikimedia: нет результатов по запросу '%s'", query)
+        return False
+
+    # Собираем imageinfo из всех страниц
+    candidates = []
+    for page in pages.values():
+        for info in page.get("imageinfo", []):
+            candidates.append(info)
+
+    if not candidates:
+        logger.info("Wikimedia: нет imageinfo для запроса '%s'", query)
+        return False
+
+    # Предпочитаем вертикальные
+    vertical = [c for c in candidates if c.get("height", 0) > c.get("width", 0)]
+    chosen = vertical[0] if vertical else candidates[0]
+
+    url = chosen.get("thumburl") or chosen.get("url")
+    if not url:
+        logger.warning("Wikimedia: нет URL изображения для запроса '%s'", query)
+        return False
+
+    try:
+        _download_stream(url, dest, headers={"User-Agent": _WIKIMEDIA_USER_AGENT})
+        logger.info("Wikimedia: скачано фото '%s' → %s", query, dest.name)
+        return True
+    except Exception as exc:
+        logger.warning("Wikimedia: ошибка скачивания: %s", exc)
+        return False
+
+
 # ─── Единая цепочка получения картинки ───────────────────────────────────────
 
 
@@ -494,10 +585,11 @@ def fetch_image(keywords: list[str], dest: Path) -> bool:
     Получить картинку для поста или истории по ключевым словам.
 
     Цепочка попыток:
-      1. Pollinations.ai — только если POLLINATIONS_TOKEN задан (платный/токен тир).
-      2. Pexels Photos (portrait, бесплатно).
-      3. Pixabay Photos (vertical, бесплатно).
-      4. False — картинка недоступна.
+      1. Pexels Photos (portrait, бесплатно).
+      2. Pixabay Photos (vertical, бесплатно).
+      3. Openverse (Creative Commons, без ключа).
+      4. Wikimedia Commons (без ключа).
+      5. False — картинка недоступна.
 
     При FAKE_ASSETS=1 — создаёт плейсхолдер через ffmpeg и возвращает True.
 
@@ -514,21 +606,24 @@ def fetch_image(keywords: list[str], dest: Path) -> bool:
 
     query = " ".join(keywords) if keywords else "abstract background"
 
-    # 1. Pollinations (только если токен задан — иначе 402 со всех IP)
-    if settings.POLLINATIONS_TOKEN:
-        if _fetch_pollinations_image(keywords, dest):
-            logger.info("fetch_image: картинка получена через Pollinations (query='%s')", query)
-            return True
-        logger.info("fetch_image: Pollinations не сработал, пробую Pexels Photos")
-
-    # 2. Pexels Photos
+    # 1. Pexels Photos
     if _fetch_pexels_photo(query, dest):
         logger.info("fetch_image: картинка получена через Pexels Photos (query='%s')", query)
         return True
 
-    # 3. Pixabay Photos
+    # 2. Pixabay Photos
     if _fetch_pixabay_photo(query, dest):
         logger.info("fetch_image: картинка получена через Pixabay Photos (query='%s')", query)
+        return True
+
+    # 3. Openverse (Creative Commons, без ключа)
+    if _fetch_openverse_photo(query, dest):
+        logger.info("fetch_image: картинка получена через Openverse (query='%s')", query)
+        return True
+
+    # 4. Wikimedia Commons (без ключа)
+    if _fetch_wikimedia_photo(query, dest):
+        logger.info("fetch_image: картинка получена через Wikimedia Commons (query='%s')", query)
         return True
 
     logger.warning(

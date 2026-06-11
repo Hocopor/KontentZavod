@@ -104,6 +104,40 @@ class FakeResponse:
     text = "ok"
 
 
+class Fake402Response:
+    """Ответ 402 (сдохший тариф провайдера прокси)."""
+    status_code = 402
+    text = "Payment Required"
+
+
+class TestCheckProxySocks5:
+    """Тесты check_proxy для socks5 (поддерживается через httpx[socks])."""
+
+    def test_socks5_supported(self, monkeypatch):
+        """socks5-прокси проверяется без ошибки — httpx[socks] установлен."""
+        from unittest.mock import MagicMock
+
+        fake_client = MagicMock()
+        fake_client.__enter__ = MagicMock(return_value=fake_client)
+        fake_client.__exit__ = MagicMock(return_value=False)
+        # Первый вызов — api.telegram.org, второй — ipv4.webshare.io (IP)
+        fake_client.get = MagicMock(
+            side_effect=[
+                MagicMock(status_code=200),                   # api.telegram.org
+                MagicMock(status_code=200, text="5.5.5.5"),  # webshare ip
+            ]
+        )
+
+        monkeypatch.setattr("app.services.proxies.httpx.Client", lambda **kw: fake_client)
+
+        from app.services.proxies import check_proxy
+        ok, msg = check_proxy("socks5://user:pass@nl-vps.example.com:1080/")
+
+        assert ok is True
+        assert "OK" in msg
+        assert "5.5.5.5" in msg
+
+
 class TestFailover:
     """
     Тест фейловера: два прокси в БД.
@@ -238,6 +272,109 @@ class TestFailover:
         assert direct_calls and direct_calls[0] is None
 
 
+class TestProxy402Failover:
+    """
+    Тест: прокси возвращает 402 (тариф исчерпан) → request_via_proxy
+    помечает его как сбойный (fail_count+1) и переходит к следующему.
+    """
+
+    def _setup_db(self, tmp_path):
+        """Создаёт тестовую БД с двумя прокси."""
+        from app.db import init_db
+        import app.config as cfg_module
+        import app.db as db_module
+
+        db_path = str(tmp_path / "test402.db")
+        db_module.settings = cfg_module.settings
+
+        init_db(db_path)
+
+        from app.security import encrypt
+        enc1 = encrypt("http://dead-proxy.example.com:3128/")
+        enc2 = encrypt("http://good-proxy.example.com:3128/")
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO proxies (label, url_encrypted, enabled, priority) VALUES (?, ?, 1, 1)",
+            ("dead-proxy", enc1),
+        )
+        conn.execute(
+            "INSERT INTO proxies (label, url_encrypted, enabled, priority) VALUES (?, ?, 1, 2)",
+            ("good-proxy", enc2),
+        )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_402_proxy_marked_fail_next_proxy_used(self, tmp_path, monkeypatch):
+        """
+        Первый прокси возвращает 402 → fail_count+1 и переходим ко второму.
+        Второй прокси отвечает 200 → возвращаем его ответ.
+        """
+        from cryptography.fernet import Fernet
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "test402.db"))
+        monkeypatch.setenv("FERNET_KEY", Fernet.generate_key().decode())
+
+        import importlib
+        import app.config
+        importlib.reload(app.config)
+        from app.config import settings as new_settings
+        import app.db as db_mod
+        db_mod.settings = new_settings
+
+        db_path = self._setup_db(tmp_path)
+        monkeypatch.setenv("DB_PATH", db_path)
+
+        importlib.reload(app.config)
+        db_mod.settings = app.config.settings
+
+        call_order = []
+
+        class FakeClient:
+            def __init__(self, proxy=None, timeout=None):
+                self._proxy = proxy
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def request(self, method, url, **kwargs):
+                call_order.append(self._proxy)
+                if "dead-proxy" in (self._proxy or ""):
+                    return Fake402Response()
+                return FakeResponse()
+
+        monkeypatch.setattr("app.services.proxies.httpx.Client", FakeClient)
+
+        from app.services.proxies import request_via_proxy
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        resp = request_via_proxy("GET", "https://api.telegram.org/", _db=conn)
+
+        # Должен вернуть ответ от второго прокси
+        assert resp.status_code == 200
+
+        # dead-proxy должен иметь fail_count=1
+        rows = conn.execute(
+            "SELECT label, fail_count FROM proxies ORDER BY priority"
+        ).fetchall()
+        assert rows[0]["fail_count"] == 1, (
+            f"Ожидался fail_count=1 у dead-proxy, получили {rows[0]['fail_count']}"
+        )
+        assert rows[1]["fail_count"] == 0, (
+            f"У good-proxy fail_count должен быть 0, получили {rows[1]['fail_count']}"
+        )
+
+        # Оба прокси должны были быть вызваны
+        assert any("dead-proxy" in (p or "") for p in call_order), "dead-proxy не вызван"
+        assert any("good-proxy" in (p or "") for p in call_order), "good-proxy не вызван"
+
+        conn.close()
+
+
 # ─── 4. Веб-эндпоинты ────────────────────────────────────────────────────────
 
 class TestProxiesWeb:
@@ -345,8 +482,19 @@ class TestProxiesWeb:
         assert "валидных" in resp.text.lower() or "не найдено" in resp.text.lower()
 
     def test_check_endpoint_socks5(self, client):
-        """check_proxy для socks5 возвращает ошибку (нет пакета httpx[socks])."""
-        from app.services.proxies import check_proxy
-        ok, msg = check_proxy("socks5://user:pass@host:1080/")
-        assert ok is False
-        assert "socks5" in msg.lower() or "http" in msg.lower()
+        """check_proxy для socks5 проходит проверку (httpx[socks] поддерживается)."""
+        from unittest.mock import MagicMock, patch
+        import httpx as httpx_module
+
+        # Мокаем httpx.Client чтобы не делать реального socks5-запроса
+        fake_client = MagicMock()
+        fake_client.__enter__ = MagicMock(return_value=fake_client)
+        fake_client.__exit__ = MagicMock(return_value=False)
+        fake_client.get = MagicMock(return_value=MagicMock(status_code=200, text="1.2.3.4"))
+
+        with patch("app.services.proxies.httpx.Client", return_value=fake_client):
+            from app.services.proxies import check_proxy
+            ok, msg = check_proxy("socks5://user:pass@host:1080/")
+
+        assert ok is True
+        assert "OK" in msg

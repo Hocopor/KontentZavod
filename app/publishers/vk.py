@@ -2,7 +2,11 @@
 Паблишер ВКонтакте.
 
 API: wall.post (https://api.vk.com/method/wall.post, v=5.199)
-Credentials JSON: {"access_token": "..."}
+Credentials JSON: {"access_token": "...", "user_token": "..."}
+  access_token — групповой токен сообщества (wall, photos).
+  user_token   — пользовательский токен АДМИНА сообщества с правами video+wall+offline.
+                 Обязателен для video.save (групповой токен получает ошибку 27 VK API).
+                 Опционален: если не задан, текстовые посты и фото работают в штатном режиме.
 Config JSON:      {"group_id": 12345678}
 
 Текст: texts["vk"]["text"] + hashtags через пробел.
@@ -10,13 +14,17 @@ Markdown-разметка убирается через md_to_plain (VK не п�
 Результат: https://vk.com/wall-{group_id}_{post_id}
 
 Видео-режим (если files["video_path"] задан):
+  Требует user_token (пользовательский токен с правами video+wall).
   Используется video.save + wallpost=1 для публикации видео в стену группы.
   Метод shortVideo.create — партнёрский (недоступен обычным токенам сообществ),
   поэтому видео-клипы НЕ реализуются; видео идёт через wallpost=1.
+  ВАЖНО: video.save с групповым access_token возвращает ошибку 27 («Group authorization
+  failed»); вызывать его необходимо с пользовательским user_token, group_id при этом
+  остаётся положительным.
 
 Фото-режим (если files["image_path"] задан и нет video_path):
   photos.getWallUploadServer → POST файла → photos.saveWallPhoto → wall.post с attachment.
-  Ошибка загрузки фото → публикация без фото (warning), не валит публикацию.
+  Всё через групповой access_token. Ошибка загрузки фото → публикация без фото (warning).
 
 Результат видео: https://vk.com/video{owner_id}_{video_id}
 """
@@ -167,15 +175,19 @@ def _publish_video(
     if not Path(video_path).exists():
         raise PublishError(f"VK: видео-файл не найден: {video_path}")
 
-    access_token = (credentials or {}).get("access_token", "")
-    if not access_token:
-        raise PublishError("VK: access_token не задан в credentials")
+    user_token = (credentials or {}).get("user_token", "")
+    if not user_token:
+        raise PublishError(
+            "VK: для публикации видео нужен пользовательский токен (user_token) с правами "
+            "video+wall+offline — групповой токен video.save не поддерживает (ошибка 27 VK API). "
+            "Добавьте его в настройках площадки VK."
+        )
     if not group_id:
         raise PublishError("VK: group_id не задан в config")
 
-    # 1. Получаем upload_url через video.save
+    # 1. Получаем upload_url через video.save (только с user_token!)
     params = {
-        "access_token": access_token,
+        "access_token": user_token,
         "group_id": int(group_id),  # положительный group_id
         "name": video_name,
         "description": full_text,

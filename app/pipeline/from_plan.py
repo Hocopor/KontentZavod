@@ -3,7 +3,7 @@
 
 generate_for_item(item_id) — диспетчер по kind типа контента (из catalog.type_info):
   - text  → пост/статья (purpose='item_post')   → content type='post'|'article', status='approved'
-  - story → история с картинкой (purpose='item_story', Pollinations) → content type='story'
+  - story → история с картинкой (purpose='item_story') → content type='story'
   - video → idea + generate_video_script + статус 'production' (рендерит process_production)
 
 При успехе создаёт строку content, проставляет plan_items.content_id и статус:
@@ -300,7 +300,7 @@ def _generate_text(db, item, project, brief) -> int:
 
 
 def _generate_story(db, item, project, brief) -> int:
-    """Создать историю с картинкой Pollinations. Возвращает content_id."""
+    """Создать историю с картинкой (Pexels/Pixabay/Openverse/Wikimedia). Возвращает content_id."""
     platform = item["platform"]
 
     prompt = load_prompt(
@@ -358,7 +358,7 @@ def _generate_story(db, item, project, brief) -> int:
         )
         content_id = cur.lastrowid
 
-    # ── Картинка истории (единая цепочка: Pollinations → Pexels → Pixabay) ───
+    # ── Картинка истории (единая цепочка: Pexels → Pixabay → Openverse → Wikimedia) ───
     media_dir = settings.data_dir_absolute / "media" / str(content_id)
     media_dir.mkdir(parents=True, exist_ok=True)
     image_path = media_dir / "story.jpg"
@@ -368,7 +368,7 @@ def _generate_story(db, item, project, brief) -> int:
     if not ok:
         raise RuntimeError(
             "Не удалось получить картинку истории "
-            "(Pollinations/Pexels/Pixabay все недоступны)"
+            "(Pexels/Pixabay/Openverse/Wikimedia все недоступны)"
         )
 
     files = {"image_path": str(image_path.absolute())}

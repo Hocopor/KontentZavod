@@ -164,6 +164,14 @@
             <div class="form-help">Токен СООБЩЕСТВА с правами wall + video. Хранится зашифрованным.</div>
         </div>
         <div class="form-group">
+            <label>User Token (для видео)
+                {% if pl.has_user_token %}<span style="color:var(--green);">задан ✓</span>{% endif %}
+            </label>
+            <input type="password" name="user_token"
+                   placeholder="{% if pl.has_user_token %}Оставьте пустым, чтобы не менять{% else %}vk1.a.xxx{% endif %}" />
+            <div class="form-help">Пользовательский токен админа сообщества с правами video+wall+offline. Нужен ТОЛЬКО для публикации видео. Хранится зашифрованным.</div>
+        </div>
+        <div class="form-group">
             <label>ID группы (без минуса)</label>
             <input type="text" name="group_id" value="{{ pl.config_parsed.get('group_id', '') }}"
                    placeholder="123456789" />

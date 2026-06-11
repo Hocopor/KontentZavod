@@ -128,12 +128,12 @@ def test_dry_run_telegram_video(tmp_path):
     assert payload["dry_run"] is True
 
 
-# ─── Тест 4: реальный путь VK видео (monkeypatch httpx.post) ─────────────────
+# ─── Тест 4: реальный путь VK видео — video.save вызван с user_token ─────────
 
 
 def test_real_vk_video_success(tmp_path, monkeypatch):
     """
-    Реальный режим VK + видео: последовательно мокаем video.save → upload.
+    Реальный режим VK + видео: video.save вызывается с user_token (не access_token).
     Итоговый URL содержит https://vk.com/video{owner_id}_{video_id}.
     """
     import httpx
@@ -142,6 +142,7 @@ def test_real_vk_video_success(tmp_path, monkeypatch):
     files = _make_video_files(tmp_path)
 
     call_count = [0]
+    video_save_params: dict = {}
 
     class FakeVideoSaveResp:
         def json(self):
@@ -160,7 +161,8 @@ def test_real_vk_video_success(tmp_path, monkeypatch):
     def fake_post(url, *args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
-            # Первый вызов — video.save
+            # Первый вызов — video.save: запоминаем параметры для проверки
+            video_save_params.update(kwargs.get("params", {}))
             return FakeVideoSaveResp()
         else:
             # Второй вызов — upload на upload_url
@@ -170,7 +172,7 @@ def test_real_vk_video_success(tmp_path, monkeypatch):
 
     url = publish_vk(
         schedule_id=4,
-        credentials={"access_token": "fake_token_vk"},
+        credentials={"access_token": "group_token_vk", "user_token": "user_token_vk"},
         config={"group_id": 99999},
         texts=_make_texts(),
         files=files,
@@ -179,9 +181,88 @@ def test_real_vk_video_success(tmp_path, monkeypatch):
 
     assert url == "https://vk.com/video-99999_12345", f"Неожиданный URL: {url}"
     assert call_count[0] == 2, f"Ожидалось 2 вызова httpx.post, было {call_count[0]}"
+    # video.save должен быть вызван с user_token, а не с групповым access_token
+    assert video_save_params.get("access_token") == "user_token_vk", (
+        f"video.save вызван не с user_token: {video_save_params.get('access_token')}"
+    )
 
 
-# ─── Тест 5: реальный путь VK видео — ошибка API video.save ──────────────────
+# ─── Тест 4b: wall.post (текстовый) использует групповой access_token ─────────
+
+
+def test_real_vk_wall_post_uses_group_token(monkeypatch):
+    """Текстовый пост (без видео и фото) — wall.post с групповым access_token."""
+    import httpx
+    from app.publishers.vk import publish_vk
+
+    wall_params: dict = {}
+
+    class FakeWallResp:
+        def json(self):
+            return {"response": {"post_id": 777}}
+
+    def fake_post(url, *args, **kwargs):
+        wall_params.update(kwargs.get("params", {}))
+        return FakeWallResp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    url = publish_vk(
+        schedule_id=41,
+        credentials={"access_token": "group_token", "user_token": "user_token"},
+        config={"group_id": 99999},
+        texts=_make_texts(),
+        files={},
+        dry_run=False,
+    )
+
+    assert "wall-99999_777" in url
+    # wall.post должен использовать групповой токен
+    assert wall_params.get("access_token") == "group_token", (
+        f"wall.post вызван не с групповым токеном: {wall_params.get('access_token')}"
+    )
+
+
+# ─── Тест 5: user_token отсутствует → PublishError с подсказкой про ошибку 27 ─
+
+
+def test_real_vk_video_no_user_token(tmp_path):
+    """Видео без user_token → PublishError с упоминанием ошибки 27."""
+    from app.publishers.vk import publish_vk
+    from app.publishers.base import PublishError
+
+    files = _make_video_files(tmp_path)
+
+    with pytest.raises(PublishError, match="ошибка 27"):
+        publish_vk(
+            schedule_id=5,
+            credentials={"access_token": "group_only_token"},
+            config={"group_id": 99999},
+            texts=_make_texts(),
+            files=files,
+            dry_run=False,
+        )
+
+
+def test_real_vk_video_empty_credentials_no_user_token(tmp_path):
+    """Видео с credentials=None → PublishError с подсказкой про user_token."""
+    from app.publishers.vk import publish_vk
+    from app.publishers.base import PublishError
+
+    files = _make_video_files(tmp_path)
+
+    with pytest.raises(PublishError, match="user_token"):
+        publish_vk(
+            schedule_id=51,
+            credentials=None,
+            config={"group_id": 99999},
+            texts=_make_texts(),
+            files=files,
+            dry_run=False,
+        )
+
+
+# ─── Тест 5c: ошибка VK API при video.save → PublishError ─────────────────────
 
 
 def test_real_vk_video_api_error(tmp_path, monkeypatch):
@@ -206,7 +287,7 @@ def test_real_vk_video_api_error(tmp_path, monkeypatch):
     with pytest.raises(PublishError, match="video.save"):
         publish_vk(
             schedule_id=5,
-            credentials={"access_token": "fake_token_vk"},
+            credentials={"access_token": "group_token", "user_token": "user_token_vk"},
             config={"group_id": 99999},
             texts=_make_texts(),
             files=files,

@@ -47,8 +47,6 @@ _FIELDS: dict[str, tuple[str, str, str]] = {
     "FFPROBE_BIN":         ("FFPROBE_BIN",          "ffprobe",                  "str"),
     # YouTube Data API v3: 10 000 юнитов/день, videos.insert = 1600 юнитов → ~6 загрузок
     "YOUTUBE_DAILY_LIMIT": ("YOUTUBE_DAILY_LIMIT",  "6",                        "int"),
-    # Pollinations.ai: бесплатный токен (регистрация на pollinations.ai) — снимает анонимные лимиты по IP
-    "POLLINATIONS_TOKEN":  ("POLLINATIONS_TOKEN",   "",                         "str"),
 }
 
 # Строковые поля, значения которых по своей природе не содержат пробелов
@@ -64,7 +62,6 @@ _SINGLE_TOKEN_FIELDS = {
     "FERNET_KEY",
     "PEXELS_API_KEY",
     "PIXABAY_API_KEY",
-    "POLLINATIONS_TOKEN",
 }
 
 

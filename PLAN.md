@@ -271,8 +271,8 @@ per-платформа, горизонт контент-плана, lookahead г
 |---|---|
 | LLM | LLM-Router → DeepSeek (платный якорь) + free: Gemini API, Groq, OpenRouter, Mistral |
 | Озвучка RU | edge-tts (Dmitry/Svetlana), word timings бесплатно |
-| Футажи/фото | Pexels API, Pixabay API |
-| Картинки AI | Gemini image gen (free tier), Pollinations.ai (без ключа) |
+| Футажи/фото | Pexels API, Pixabay API, Openverse API, Wikimedia Commons (всё бесплатно; обход IP-блоков — свой SOCKS5 на VPS) |
+| Картинки AI | ~~Pollinations.ai~~ (стал платным, выпилен 2026-06-11); Gemini image gen — резерв |
 | Музыка | Pixabay Music, YouTube Audio Library |
 | Рендер | ffmpeg (filter graph, без moviepy) |
 | Сервисы | SQLite, APScheduler, FastAPI+Jinja2+HTMX, Chart.js |
@@ -287,6 +287,8 @@ per-платформа, горизонт контент-плана, lookahead г
 
 ## Журнал решений
 
+- 2026-06-11 (6): **Этап 7.12 — медиа-цепочка без платных звеньев (решения пользователя):** (а) Pollinations выпилен полностью — 402 даже с токеном, бесплатного тира нет; (б) Pexels/Pixabay остаются (бесплатны, блок по IP обходим прокси); (в) пользователь поднимает свой SOCKS5 на VPS в Нидерландах (dante) → завод получил поддержку socks5 (`httpx[socks]`); (г) новые бесплатные источники без ключей: Openverse API и Wikimedia Commons API — цепочка `fetch_image` = Pexels → Pixabay → Openverse → Wikimedia; (д) локальный ffmpeg-фоллбэк «карточка с градиентом» — ОТКЛОНЁН пользователем; (е) прокси, ответивший 402, считается исчерпанным (fail_count+1, дальше по пулу) — 402 от прокси-провайдера ≠ 402 целевого сайта.
+- 2026-06-11 (6): **VK-видео — через пользовательский токен:** `video.save` недоступен групповым токенам (ошибка 27, ограничение VK API). В credentials площадки VK добавлен опциональный `user_token` (админ сообщества, права video+wall+offline, получение через vkhost/Kate Mobile); видео грузится им, посты/фото — прежним групповым. Без user_token видео падает с понятной подсказкой.
 - 2026-06-11 (5): **Картинки — стоковые фото вместо ИИ-генерации**: Pollinations закрыл анонимный доступ (402 со всех IP) — на нулевом бюджете картинки берём из Pexels/Pixabay Photo API (бесплатные ключи, лицензия позволяет): цепочка `fetch_image` = Pollinations (только с токеном) → Pexels → Pixabay. LLM отдаёт `image_keywords` (2–4 англ. слова) для стокового поиска.
 - 2026-06-11 (5): **Озвучка и субтитры настраиваются per-project** (панель запуска): голос по умолчанию Светлана (женский, ru), варианты Дмитрий/автовыбор ИИ; субтитры по умолчанию белый шрифт + чёрное обрамление (толщина 5) + жёлтая karaoke-подсветка, всё в project.settings. UI: живой CSS-предпросмотр субтитров + «▶ Прослушать» голос (GET /tts/preview/{voice}, кеш mp3).
 - 2026-06-11 (4): **Все скачивания ассетов — с прокси-фейловером** (Pexels CDN 403, Pixabay reset, Pollinations 402 с РФ-IP): `assets.py::_http_get/_download_stream` после провала прямого запроса перебирают активные http-прокси пула. Pollinations: при 402 ретрай без `nologo=true` + опциональный `POLLINATIONS_TOKEN` в .env.

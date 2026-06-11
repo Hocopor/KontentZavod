@@ -590,9 +590,9 @@ class TestProxyFailover:
             def __exit__(self, *args):
                 pass
 
-        # Мокаем list_active_proxies — один http-прокси
+        # Мокаем _get_pool_proxies — один http-прокси
         monkeypatch.setattr(
-            "app.pipeline.assets._get_http_proxies",
+            "app.pipeline.assets._get_pool_proxies",
             lambda: ["http://proxy.example.com:3128/"],
         )
 
@@ -626,7 +626,7 @@ class TestProxyFailover:
         direct_ctx.__exit__ = MagicMock(return_value=False)
 
         monkeypatch.setattr(
-            "app.pipeline.assets._get_http_proxies",
+            "app.pipeline.assets._get_pool_proxies",
             lambda: [],
         )
 
@@ -637,66 +637,77 @@ class TestProxyFailover:
         with pytest.raises(httpx_module.HTTPStatusError):
             assets_mod._download_stream("https://example.com/video.mp4", dest)
 
-    def test_pollinations_402_nologo_retry_without_nologo(self, tmp_path, monkeypatch):
+    def test_download_stream_402_via_proxy_skips_to_next(self, tmp_path, monkeypatch):
         """
-        Pollinations: 402 с nologo=true → повтор без nologo → успех.
+        Прямое скачивание → 403, первый прокси отвечает 402 (тариф исчерпан) →
+        переходим ко второму прокси, который успешно скачивает.
         """
-        monkeypatch.setenv("POLLINATIONS_TOKEN", "")
-
         import httpx as httpx_module
 
-        call_urls: list[str] = []
-
-        def fake_download_stream(url: str, dest, headers=None):
-            call_urls.append(url)
-            if "nologo=true" in url:
-                # первый вызов — 402
-                resp_mock = MagicMock()
-                resp_mock.status_code = 402
-                raise httpx_module.HTTPStatusError(
-                    "402",
-                    request=MagicMock(),
-                    response=resp_mock,
-                )
-            # второй вызов — успех (без nologo)
-            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
-
-        import app.pipeline.assets as assets_mod
-        monkeypatch.setattr(assets_mod, "_download_stream", fake_download_stream)
-        monkeypatch.setenv("DATA_DIR", str(tmp_path))
-
-        dest = tmp_path / "scene.jpg"
-        result = assets_mod._fetch_pollinations_image(["sunset", "sky"], dest)
-
-        assert result is True, "Должен вернуть True при успехе без nologo"
-        assert len(call_urls) == 2, f"Должно быть 2 вызова, было: {call_urls}"
-        assert "nologo=true" in call_urls[0], "Первый вызов — с nologo"
-        assert "nologo=true" not in call_urls[1], "Второй вызов — без nologo"
-
-    def test_pollinations_token_added_to_url(self, tmp_path, monkeypatch):
-        """
-        POLLINATIONS_TOKEN задан → токен добавляется в URL.
-        """
-        monkeypatch.setenv("POLLINATIONS_TOKEN", "my-secret-token")
-
-        call_urls: list[str] = []
-
-        def fake_download_stream(url: str, dest, headers=None):
-            call_urls.append(url)
-            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
-
-        import app.pipeline.assets as assets_mod
-        monkeypatch.setattr(assets_mod, "_download_stream", fake_download_stream)
-        monkeypatch.setenv("DATA_DIR", str(tmp_path))
-
-        dest = tmp_path / "scene_token.jpg"
-        result = assets_mod._fetch_pollinations_image(["nature"], dest)
-
-        assert result is True
-        assert len(call_urls) >= 1
-        assert "token=my-secret-token" in call_urls[0], (
-            f"Токен должен быть в URL, но URL был: {call_urls[0]}"
+        # Прямой stream: симулируем 403
+        direct_resp = MagicMock()
+        direct_resp.status_code = 403
+        direct_resp.raise_for_status = MagicMock(
+            side_effect=httpx_module.HTTPStatusError(
+                "403 Forbidden",
+                request=MagicMock(),
+                response=direct_resp,
+            )
         )
+        direct_ctx = MagicMock()
+        direct_ctx.__enter__ = MagicMock(return_value=direct_resp)
+        direct_ctx.__exit__ = MagicMock(return_value=False)
+
+        proxy_calls: list[str] = []
+
+        # Первый прокси возвращает 402 (сдохший тариф)
+        dead_resp = MagicMock()
+        dead_resp.status_code = 402
+        dead_resp.request = MagicMock()
+        dead_ctx = MagicMock()
+        dead_ctx.__enter__ = MagicMock(return_value=dead_resp)
+        dead_ctx.__exit__ = MagicMock(return_value=False)
+
+        # Второй прокси — успех
+        good_resp = MagicMock()
+        good_resp.status_code = 200
+        good_resp.request = MagicMock()
+        good_resp.iter_bytes = MagicMock(return_value=[b"\xff\xd8\xff" + b"\x00" * 10])
+        good_resp.raise_for_status = MagicMock()
+        good_ctx = MagicMock()
+        good_ctx.__enter__ = MagicMock(return_value=good_resp)
+        good_ctx.__exit__ = MagicMock(return_value=False)
+
+        proxy_stream_results = [dead_ctx, good_ctx]
+
+        class FakeProxyClient:
+            def __init__(self, proxy=None, timeout=None, **kw):
+                self._proxy = proxy
+                proxy_calls.append(proxy)
+                self._idx = len(proxy_calls) - 1
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def stream(self, method, url, **kw):
+                return proxy_stream_results[self._idx]
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "stream", lambda *a, **kw: direct_ctx)
+        monkeypatch.setattr(assets_mod.httpx, "Client", FakeProxyClient)
+        monkeypatch.setattr(
+            "app.pipeline.assets._get_pool_proxies",
+            lambda: ["http://dead-proxy:3128/", "http://good-proxy:3128/"],
+        )
+
+        dest = tmp_path / "stream402.jpg"
+        assets_mod._download_stream("https://example.com/image.jpg", dest)
+
+        assert dest.exists(), "Файл должен быть скачан через второй прокси"
+        assert len(proxy_calls) == 2, f"Ожидался вызов двух прокси, было: {proxy_calls}"
 
 
 # ─── Pexels Photos / Pixabay Photos ──────────────────────────────────────────
@@ -891,42 +902,9 @@ class TestFetchImage:
         assert result is True
         assert len(fake_called) == 1
 
-    def test_pollinations_skipped_without_token(self, tmp_path, monkeypatch):
-        """Без POLLINATIONS_TOKEN → Pollinations не вызывается, идёт к Pexels."""
+    def test_pexels_first_in_chain(self, tmp_path, monkeypatch):
+        """Pexels — первый в цепочке, при успехе остальные не вызываются."""
         monkeypatch.setenv("FAKE_ASSETS", "0")
-        monkeypatch.setenv("POLLINATIONS_TOKEN", "")
-        monkeypatch.setenv("PEXELS_API_KEY", "fake-key")
-        monkeypatch.setenv("PIXABAY_API_KEY", "")
-        monkeypatch.setenv("DATA_DIR", str(tmp_path))
-
-        import app.pipeline.assets as assets_mod
-
-        pollinations_called = []
-        pexels_called = []
-
-        def mock_pollinations(keywords, dest):
-            pollinations_called.append(keywords)
-            return False
-
-        def mock_pexels_photo(query, dest):
-            pexels_called.append(query)
-            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
-            return True
-
-        monkeypatch.setattr(assets_mod, "_fetch_pollinations_image", mock_pollinations)
-        monkeypatch.setattr(assets_mod, "_fetch_pexels_photo", mock_pexels_photo)
-
-        dest = tmp_path / "result.jpg"
-        result = assets_mod.fetch_image(["marketing", "success"], dest)
-
-        assert result is True
-        assert len(pollinations_called) == 0, "Pollinations не должен вызываться без токена"
-        assert len(pexels_called) == 1
-
-    def test_pollinations_with_token_called_first(self, tmp_path, monkeypatch):
-        """С POLLINATIONS_TOKEN → Pollinations вызывается первым и при успехе возвращает True."""
-        monkeypatch.setenv("FAKE_ASSETS", "0")
-        monkeypatch.setenv("POLLINATIONS_TOKEN", "my-token")
         monkeypatch.setenv("PEXELS_API_KEY", "fake-key")
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
@@ -934,28 +912,37 @@ class TestFetchImage:
 
         call_order = []
 
-        def mock_pollinations(keywords, dest):
-            call_order.append("pollinations")
+        def mock_pexels_photo(query, dest):
+            call_order.append("pexels")
             dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
             return True
 
-        def mock_pexels_photo(query, dest):
-            call_order.append("pexels")
+        def mock_pixabay_photo(query, dest):
+            call_order.append("pixabay")
             return False
 
-        monkeypatch.setattr(assets_mod, "_fetch_pollinations_image", mock_pollinations)
+        def mock_openverse(query, dest):
+            call_order.append("openverse")
+            return False
+
+        def mock_wikimedia(query, dest):
+            call_order.append("wikimedia")
+            return False
+
         monkeypatch.setattr(assets_mod, "_fetch_pexels_photo", mock_pexels_photo)
+        monkeypatch.setattr(assets_mod, "_fetch_pixabay_photo", mock_pixabay_photo)
+        monkeypatch.setattr(assets_mod, "_fetch_openverse_photo", mock_openverse)
+        monkeypatch.setattr(assets_mod, "_fetch_wikimedia_photo", mock_wikimedia)
 
         dest = tmp_path / "result.jpg"
         result = assets_mod.fetch_image(["nature"], dest)
 
         assert result is True
-        assert call_order == ["pollinations"], f"Ожидался только pollinations, порядок: {call_order}"
+        assert call_order == ["pexels"], f"Только Pexels должен быть вызван, порядок: {call_order}"
 
     def test_pexels_success_skips_pixabay(self, tmp_path, monkeypatch):
         """Pexels успешен → Pixabay не вызывается."""
         monkeypatch.setenv("FAKE_ASSETS", "0")
-        monkeypatch.setenv("POLLINATIONS_TOKEN", "")
         monkeypatch.setenv("PEXELS_API_KEY", "fake-key")
         monkeypatch.setenv("PIXABAY_API_KEY", "fake-key")
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -981,10 +968,39 @@ class TestFetchImage:
         assert result is True
         assert len(pixabay_called) == 0, "Pixabay не должен вызываться если Pexels успешен"
 
+    def test_chain_order_pexels_pixabay_openverse_wikimedia(self, tmp_path, monkeypatch):
+        """Все источники вызываются по порядку: Pexels→Pixabay→Openverse→Wikimedia."""
+        monkeypatch.setenv("FAKE_ASSETS", "0")
+        monkeypatch.setenv("PEXELS_API_KEY", "fake-key")
+        monkeypatch.setenv("PIXABAY_API_KEY", "fake-key")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import app.pipeline.assets as assets_mod
+
+        call_order = []
+
+        monkeypatch.setattr(assets_mod, "_fetch_pexels_photo", lambda q, d: call_order.append("pexels") or False)
+        monkeypatch.setattr(assets_mod, "_fetch_pixabay_photo", lambda q, d: call_order.append("pixabay") or False)
+        monkeypatch.setattr(assets_mod, "_fetch_openverse_photo", lambda q, d: call_order.append("openverse") or False)
+
+        def mock_wikimedia(query, dest):
+            call_order.append("wikimedia")
+            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
+            return True
+
+        monkeypatch.setattr(assets_mod, "_fetch_wikimedia_photo", mock_wikimedia)
+
+        dest = tmp_path / "result.jpg"
+        result = assets_mod.fetch_image(["mountain", "lake"], dest)
+
+        assert result is True
+        assert call_order == ["pexels", "pixabay", "openverse", "wikimedia"], (
+            f"Неверный порядок вызовов: {call_order}"
+        )
+
     def test_all_sources_fail_returns_false(self, tmp_path, monkeypatch):
         """Все источники провалились → False."""
         monkeypatch.setenv("FAKE_ASSETS", "0")
-        monkeypatch.setenv("POLLINATIONS_TOKEN", "")
         monkeypatch.setenv("PEXELS_API_KEY", "fake-key")
         monkeypatch.setenv("PIXABAY_API_KEY", "fake-key")
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -993,9 +1009,196 @@ class TestFetchImage:
 
         monkeypatch.setattr(assets_mod, "_fetch_pexels_photo", lambda q, d: False)
         monkeypatch.setattr(assets_mod, "_fetch_pixabay_photo", lambda q, d: False)
+        monkeypatch.setattr(assets_mod, "_fetch_openverse_photo", lambda q, d: False)
+        monkeypatch.setattr(assets_mod, "_fetch_wikimedia_photo", lambda q, d: False)
 
         dest = tmp_path / "result.jpg"
         result = assets_mod.fetch_image(["some", "query"], dest)
 
         assert result is False
         assert not dest.exists()
+
+
+# ─── Openverse Photos ─────────────────────────────────────────────────────────
+
+
+def _make_openverse_response(
+    results: list[dict] | None = None,
+) -> MagicMock:
+    """Собрать fake-ответ Openverse API."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {"results": results or []}
+    return resp
+
+
+class TestOpenversePhoto:
+    """Тесты _fetch_openverse_photo."""
+
+    def test_openverse_success_vertical_preferred(self, tmp_path, monkeypatch):
+        """Openverse: есть вертикальное фото → берём его, а не горизонтальное."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        results = [
+            {"url": "https://openverse.org/horizontal.jpg", "width": 1920, "height": 1080},
+            {"url": "https://openverse.org/vertical.jpg",   "width": 1080, "height": 1920},
+        ]
+        openverse_resp = _make_openverse_response(results)
+        downloaded_urls = []
+
+        def fake_stream(method, url, **kwargs):
+            downloaded_urls.append(url)
+            ctx = MagicMock()
+            ctx.__enter__ = MagicMock(return_value=ctx)
+            ctx.__exit__ = MagicMock(return_value=False)
+            ctx.raise_for_status = MagicMock()
+            ctx.iter_bytes = MagicMock(return_value=[b"\xff\xd8\xff" + b"\x00" * 20])
+            return ctx
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "get", lambda url, **kw: openverse_resp)
+        monkeypatch.setattr(assets_mod.httpx, "stream", fake_stream)
+
+        dest = tmp_path / "openverse.jpg"
+        result = assets_mod._fetch_openverse_photo("nature landscape", dest)
+
+        assert result is True
+        assert dest.exists()
+        assert any("vertical" in u for u in downloaded_urls), (
+            f"Должен быть выбран вертикальный, URLs: {downloaded_urls}"
+        )
+
+    def test_openverse_empty_results_returns_false(self, tmp_path, monkeypatch):
+        """Openverse возвращает пустые results → False."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(
+            assets_mod.httpx, "get",
+            lambda url, **kw: _make_openverse_response([]),
+        )
+
+        dest = tmp_path / "openverse.jpg"
+        result = assets_mod._fetch_openverse_photo("xyz 404 nothing", dest)
+
+        assert result is False
+        assert not dest.exists()
+
+    def test_openverse_http_error_returns_false(self, tmp_path, monkeypatch):
+        """Openverse возвращает HTTP-ошибку → warning + False."""
+        import httpx as httpx_module
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        bad_resp = MagicMock()
+        bad_resp.raise_for_status = MagicMock(
+            side_effect=httpx_module.HTTPStatusError(
+                "500",
+                request=MagicMock(),
+                response=bad_resp,
+            )
+        )
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "get", lambda url, **kw: bad_resp)
+
+        dest = tmp_path / "openverse.jpg"
+        result = assets_mod._fetch_openverse_photo("error query", dest)
+
+        assert result is False
+
+
+# ─── Wikimedia Commons ────────────────────────────────────────────────────────
+
+
+def _make_wikimedia_response(pages: dict | None = None) -> MagicMock:
+    """Собрать fake-ответ Wikimedia API."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {"query": {"pages": pages or {}}}
+    return resp
+
+
+class TestWikimediaPhoto:
+    """Тесты _fetch_wikimedia_photo."""
+
+    def test_wikimedia_success(self, tmp_path, monkeypatch):
+        """Wikimedia: успешный запрос, скачивает thumburl."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        pages = {
+            "1": {
+                "imageinfo": [
+                    {
+                        "url": "https://upload.wikimedia.org/orig.jpg",
+                        "thumburl": "https://upload.wikimedia.org/thumb.jpg",
+                        "width": 1080,
+                        "height": 1920,
+                    }
+                ]
+            }
+        }
+        wikimedia_resp = _make_wikimedia_response(pages)
+        downloaded_urls = []
+
+        def fake_stream(method, url, **kwargs):
+            downloaded_urls.append(url)
+            ctx = MagicMock()
+            ctx.__enter__ = MagicMock(return_value=ctx)
+            ctx.__exit__ = MagicMock(return_value=False)
+            ctx.raise_for_status = MagicMock()
+            ctx.iter_bytes = MagicMock(return_value=[b"\xff\xd8\xff" + b"\x00" * 20])
+            return ctx
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "get", lambda url, **kw: wikimedia_resp)
+        monkeypatch.setattr(assets_mod.httpx, "stream", fake_stream)
+
+        dest = tmp_path / "wikimedia.jpg"
+        result = assets_mod._fetch_wikimedia_photo("mountain landscape", dest)
+
+        assert result is True
+        assert dest.exists()
+        assert any("thumb" in u for u in downloaded_urls), (
+            f"Должен скачиваться thumburl, URLs: {downloaded_urls}"
+        )
+
+    def test_wikimedia_no_pages_returns_false(self, tmp_path, monkeypatch):
+        """Wikimedia: нет страниц в ответе → False."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(
+            assets_mod.httpx, "get",
+            lambda url, **kw: _make_wikimedia_response({}),
+        )
+
+        dest = tmp_path / "wikimedia.jpg"
+        result = assets_mod._fetch_wikimedia_photo("nothing found xyz", dest)
+
+        assert result is False
+        assert not dest.exists()
+
+    def test_wikimedia_user_agent_in_request(self, tmp_path, monkeypatch):
+        """Wikimedia: User-Agent присутствует в запросе к API."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        captured_headers: list[dict] = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            captured_headers.append(dict(headers or {}))
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"query": {"pages": {}}}
+            return resp
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "get", fake_get)
+
+        dest = tmp_path / "wikimedia.jpg"
+        assets_mod._fetch_wikimedia_photo("test query", dest)
+
+        assert len(captured_headers) >= 1
+        ua = captured_headers[0].get("User-Agent", "")
+        assert "KontentZavod" in ua, (
+            f"User-Agent должен содержать 'KontentZavod', получили: {ua!r}"
+        )

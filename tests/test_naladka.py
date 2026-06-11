@@ -162,6 +162,108 @@ class TestCredentialsForms:
         config = json.loads(row["config"])
         assert config.get("group_id") == "123456"
 
+    def test_vk_save_user_token(self, client, patch_env):
+        """POST для vk с user_token сохраняет его в credentials вместе с access_token."""
+        _setup_db_path()
+        with get_db() as db:
+            pid, slug = _create_project(db)
+
+        resp = client.post(
+            f"/projects/{slug}/platform",
+            data={
+                "platform": "vk",
+                "enabled": "1",
+                "mode": "auto",
+                "access_token": "vktoken_group",
+                "user_token": "vktoken_user",
+                "group_id": "111222",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        with get_db() as db:
+            row = db.execute(
+                "SELECT credentials FROM project_platforms"
+                " WHERE project_id=? AND platform='vk'",
+                (pid,),
+            ).fetchone()
+
+        from app.security import decrypt
+        creds = json.loads(decrypt(row["credentials"]))
+        assert creds.get("access_token") == "vktoken_group"
+        assert creds.get("user_token") == "vktoken_user"
+
+    def test_vk_empty_user_token_does_not_overwrite(self, client, patch_env):
+        """Повторное сохранение VK с пустым user_token не затирает ранее сохранённый."""
+        _setup_db_path()
+        with get_db() as db:
+            pid, slug = _create_project(db)
+
+        # Первый раз — сохраняем оба токена
+        client.post(
+            f"/projects/{slug}/platform",
+            data={
+                "platform": "vk",
+                "enabled": "1",
+                "mode": "auto",
+                "access_token": "group_tok",
+                "user_token": "user_tok_original",
+                "group_id": "999",
+            },
+            follow_redirects=False,
+        )
+
+        # Второй раз — обновляем group_id, user_token не передаём
+        client.post(
+            f"/projects/{slug}/platform",
+            data={
+                "platform": "vk",
+                "enabled": "1",
+                "mode": "auto",
+                "access_token": "group_tok",
+                "group_id": "888",
+            },
+            follow_redirects=False,
+        )
+
+        with get_db() as db:
+            row = db.execute(
+                "SELECT credentials FROM project_platforms"
+                " WHERE project_id=? AND platform='vk'",
+                (pid,),
+            ).fetchone()
+
+        from app.security import decrypt
+        creds = json.loads(decrypt(row["credentials"]))
+        assert creds.get("user_token") == "user_tok_original", (
+            f"user_token был затёрт: {creds}"
+        )
+
+    def test_vk_has_user_token_flag_in_context(self, client, patch_env):
+        """Страница проекта показывает 'задан ✓' для user_token после сохранения."""
+        _setup_db_path()
+        with get_db() as db:
+            pid, slug = _create_project(db)
+
+        client.post(
+            f"/projects/{slug}/platform",
+            data={
+                "platform": "vk",
+                "enabled": "1",
+                "mode": "auto",
+                "access_token": "group_tok2",
+                "user_token": "user_tok2",
+                "group_id": "777",
+            },
+            follow_redirects=False,
+        )
+
+        resp = client.get(f"/projects/{slug}")
+        assert resp.status_code == 200
+        # Бейдж user_token должен присутствовать на странице
+        assert "задан ✓" in resp.text
+
     def test_youtube_save_named_fields(self, client, patch_env):
         """POST для youtube сохраняет client_id, client_secret, refresh_token."""
         _setup_db_path()
@@ -445,6 +547,81 @@ class TestPlatformCheck:
         resp = client.post(f"/projects/{slug}/platforms/vk/check")
         assert resp.status_code == 200
         assert "✗" in resp.text or "ошибка" in resp.text.lower() or "error" in resp.text.lower()
+
+    def _setup_vk_with_user_token(self, pid):
+        from app.security import encrypt
+        creds = encrypt(json.dumps({
+            "access_token": "vktoken_abc",
+            "user_token": "vkusertoken_abc",
+        }))
+        with get_db() as db:
+            db.execute(
+                "UPDATE project_platforms SET credentials=?, config=?"
+                " WHERE project_id=? AND platform='vk'",
+                (creds, json.dumps({"group_id": "12345"}), pid),
+            )
+
+    def test_vk_check_with_user_token_success(self, client, patch_env, monkeypatch):
+        """vk /check с user_token: groups.getById + users.get оба успешны → ✓ + 'user token ок'."""
+        _setup_db_path()
+        with get_db() as db:
+            pid, slug = _create_project(db)
+        self._setup_vk_with_user_token(pid)
+
+        call_urls = []
+
+        def fake_get(url, *args, **kwargs):
+            call_urls.append(url)
+            mock = MagicMock()
+            mock.status_code = 200
+            if "groups.getById" in url:
+                mock.json.return_value = {
+                    "response": [{"id": 12345, "name": "Test Group"}]
+                }
+            else:
+                mock.json.return_value = {
+                    "response": [{"id": 111, "first_name": "Иван", "last_name": "Иванов"}]
+                }
+            return mock
+
+        import httpx
+        monkeypatch.setattr(httpx, "get", fake_get)
+
+        resp = client.post(f"/projects/{slug}/platforms/vk/check")
+        assert resp.status_code == 200
+        assert "user token ок" in resp.text or "user token" in resp.text
+        # Должны быть вызваны оба метода
+        assert any("groups.getById" in u for u in call_urls)
+        assert any("users.get" in u for u in call_urls)
+
+    def test_vk_check_with_user_token_error(self, client, patch_env, monkeypatch):
+        """vk /check с невалидным user_token: groups.getById успешен, users.get → ошибка."""
+        _setup_db_path()
+        with get_db() as db:
+            pid, slug = _create_project(db)
+        self._setup_vk_with_user_token(pid)
+
+        def fake_get(url, *args, **kwargs):
+            mock = MagicMock()
+            mock.status_code = 200
+            if "groups.getById" in url:
+                mock.json.return_value = {
+                    "response": [{"id": 12345, "name": "Test Group"}]
+                }
+            else:
+                mock.json.return_value = {
+                    "error": {"error_code": 5, "error_msg": "User authorization failed"}
+                }
+            return mock
+
+        import httpx
+        monkeypatch.setattr(httpx, "get", fake_get)
+
+        resp = client.post(f"/projects/{slug}/platforms/vk/check")
+        assert resp.status_code == 200
+        # Ответ должен содержать инфо об ошибке user token
+        assert "user token" in resp.text.lower()
+        assert "5" in resp.text or "ошибка" in resp.text.lower() or "error" in resp.text.lower()
 
     def test_youtube_check_success(self, client, patch_env, monkeypatch):
         """youtube /check с успешным обновлением токена → зелёный фрагмент."""

@@ -139,18 +139,11 @@ def check_proxy(url: str) -> tuple[bool, str]:
     Любой HTTP-ответ считается успехом (значит, прокси работает и видит внешний интернет).
     Дополнительно пробует определить внешний IP через https://ipv4.webshare.io/.
 
-    socks5 не поддерживается без пакета httpx[socks] — возвращает (False, подсказка).
+    socks5 поддерживается при установленном пакете httpx[socks] (socksio).
 
     Returns:
         (True, "OK, внешний IP: x.x.x.x") или (False, "текст ошибки")
     """
-    # socks5 требует дополнительного пакета
-    if url.lower().startswith("socks5://"):
-        return (
-            False,
-            "socks5 требует пакета httpx[socks] — пока поддерживаются только http-прокси",
-        )
-
     try:
         # Проверяем через api.telegram.org
         with httpx.Client(proxy=url, timeout=10) as client:
@@ -268,16 +261,22 @@ def request_via_proxy(
             proxy_url = proxy["url"]
             proxy_id = proxy["id"]
 
-            # socks5 — пропускаем (нет поддержки без httpx[socks])
-            if proxy_url.lower().startswith("socks5://"):
-                logger.debug("Пропускаем socks5-прокси id=%s (не поддерживается)", proxy_id)
-                continue
-
             try:
                 with httpx.Client(proxy=proxy_url, timeout=timeout) as client:
                     resp = client.request(method, url, **kwargs)
 
-                # Успех — любой HTTP-ответ (4xx/5xx от сервера тоже успех прокси)
+                # 402 через прокси — признак исчерпанного тарифа у провайдера прокси,
+                # а не ответ целевого сервера. Считаем это ошибкой прокси.
+                if resp.status_code == 402:
+                    err_text = "402 Payment Required — тариф провайдера прокси исчерпан"
+                    logger.warning(
+                        "Прокси id=%s (%s) вернул 402 — помечаем как сбойный",
+                        proxy_id, proxy_url,
+                    )
+                    _mark_proxy_fail(conn, proxy_id, err_text)
+                    continue
+
+                # Успех — любой иной HTTP-ответ (4xx/5xx от сервера тоже успех прокси)
                 _mark_proxy_ok(conn, proxy_id)
                 return resp
 

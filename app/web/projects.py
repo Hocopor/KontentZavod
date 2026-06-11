@@ -341,6 +341,14 @@ def _build_detail_context(slug: str) -> dict | None:
         pl_dict = dict(pl)
         pl_dict["display_name"] = _platform_display_name(pl_dict["platform"])
         pl_dict["has_credentials"] = bool(pl_dict.get("credentials"))
+        # Флаг наличия user_token в credentials VK (расшифровываем только для VK)
+        pl_dict["has_user_token"] = False
+        if pl_dict["platform"] == "vk" and pl_dict.get("credentials"):
+            try:
+                vk_creds = json.loads(decrypt(pl_dict["credentials"]))
+                pl_dict["has_user_token"] = bool(vk_creds.get("user_token", ""))
+            except Exception:  # noqa: BLE001
+                pass
         cfg = pl_dict.get("config")
         if cfg:
             try:
@@ -533,6 +541,7 @@ async def platform_save(
     chat_id: str = Form(""),
     # vk
     access_token: str = Form(""),
+    user_token: str = Form(""),
     group_id: str = Form(""),
     # youtube
     client_id: str = Form(""),
@@ -570,6 +579,13 @@ async def platform_save(
 
     enabled_int = 1 if enabled in ("1", "on", "true") else 0
 
+    # ── Читаем существующую запись площадки ─────────────────────────────────
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT id, credentials FROM project_platforms WHERE project_id=? AND platform=?",
+            (project["id"], platform),
+        ).fetchone()
+
     # ── Собрать credentials JSON по платформе ────────────────────────────────
     def _build_new_credentials() -> str | None:
         """Возвращает зашифрованный JSON или None, если нет данных."""
@@ -581,9 +597,24 @@ async def platform_save(
                                       ensure_ascii=False))
         elif platform == "vk":
             token = access_token.strip() or credentials_token.strip()
-            if not token:
+            utoken = user_token.strip()
+            if not token and not utoken:
                 return None
-            return encrypt(json.dumps({"access_token": token}, ensure_ascii=False))
+            # Мёрджим поверх существующих credentials (не затираем незаполненные поля)
+            old_creds: dict = {}
+            if existing and existing["credentials"]:
+                try:
+                    old_creds = json.loads(decrypt(existing["credentials"]))
+                except Exception:  # noqa: BLE001
+                    old_creds = {}
+            merged = dict(old_creds)
+            if token:
+                merged["access_token"] = token
+            if utoken:
+                merged["user_token"] = utoken
+            if not merged.get("access_token"):
+                return None
+            return encrypt(json.dumps(merged, ensure_ascii=False))
         elif platform == "youtube":
             cid = client_id.strip()
             csec = client_secret.strip()
@@ -605,11 +636,6 @@ async def platform_save(
     new_creds_value = _build_new_credentials()
 
     with get_db() as db:
-        existing = db.execute(
-            "SELECT id, credentials FROM project_platforms WHERE project_id=? AND platform=?",
-            (project["id"], platform),
-        ).fetchone()
-
         # Обновить credentials только если передан новый (не пустой)
         if new_creds_value is not None:
             final_credentials = new_creds_value
@@ -733,6 +759,7 @@ def _check_telegram(credentials: dict, config: dict) -> HTMLResponse:
 
 def _check_vk(credentials: dict, config: dict) -> HTMLResponse:
     access_token = credentials.get("access_token", "")
+    user_token = credentials.get("user_token", "")
     group_id = config.get("group_id", "")
     if not access_token:
         return _check_html_err("access_token не задан")
@@ -763,7 +790,28 @@ def _check_vk(credentials: dict, config: dict) -> HTMLResponse:
     else:
         groups = response
     name = groups[0].get("name", "?") if groups else "группа найдена"
-    return _check_html_ok(f"группа «{name}» доступна")
+    group_msg = f"группа «{name}» доступна"
+
+    # Дополнительная проверка user_token (если задан)
+    if user_token:
+        try:
+            uresp = httpx.get(
+                "https://api.vk.com/method/users.get",
+                params={"access_token": user_token, "v": "5.199"},
+                timeout=10,
+            )
+            udata = uresp.json()
+        except httpx.HTTPError as exc:
+            return _check_html_ok(f"{group_msg}; user token: сетевая ошибка {exc}")
+        if "error" in udata:
+            uerr = udata["error"]
+            return _check_html_ok(
+                f"{group_msg}; user token: ошибка {uerr.get('error_code')} "
+                f"{uerr.get('error_msg', '')}"
+            )
+        return _check_html_ok(f"{group_msg}; user token ок ✓")
+
+    return _check_html_ok(group_msg)
 
 
 def _check_youtube(credentials: dict) -> HTMLResponse:
