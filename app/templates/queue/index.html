@@ -263,6 +263,12 @@
 </div>
 {% endif %}
 
+{% if not cookie_project %}
+<div class="alert alert-info" style="margin-bottom:1rem;font-size:.88rem;">
+    Выберите проект в шапке, чтобы видеть только его.
+</div>
+{% endif %}
+
 {% if not project %}
 <div class="card empty-state">
     <div class="empty-icon">📋</div>

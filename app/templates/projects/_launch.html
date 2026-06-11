@@ -36,6 +36,9 @@
     {% if error %}
     <div class="alert alert-error mb-2">{{ error }}</div>
     {% endif %}
+    {% if notice %}
+    <div class="alert alert-success mb-2">{{ notice }}</div>
+    {% endif %}
 
     {# ── Форма настроек + запуска ── #}
     <form id="launch-form-{{ project.slug }}">
@@ -102,14 +105,14 @@
             <button type="button" class="btn btn-secondary btn-sm"
                     hx-post="/projects/{{ project.slug }}/launch-settings"
                     hx-include="#launch-form-{{ project.slug }}"
-                    hx-target="#launch-panel"
+                    hx-target="#launch-panel-inner"
                     hx-swap="outerHTML">
                 💾 Сохранить настройки
             </button>
             <button type="button" class="btn btn-success btn-sm"
                     hx-post="/projects/{{ project.slug }}/launch"
                     hx-include="#launch-form-{{ project.slug }}"
-                    hx-target="#launch-panel"
+                    hx-target="#launch-panel-inner"
                     hx-swap="outerHTML">
                 ▶ В работу
             </button>
@@ -117,7 +120,7 @@
             {# Проект запущен — показать кнопки управления #}
             <button type="button" class="btn btn-warning btn-sm"
                     hx-post="/projects/{{ project.slug }}/stop"
-                    hx-target="#launch-panel"
+                    hx-target="#launch-panel-inner"
                     hx-swap="outerHTML"
                     onclick="return confirm('Остановить проект?')">
                 ⏹ Остановить проект
@@ -125,7 +128,7 @@
             <button type="button" class="btn btn-secondary btn-sm"
                     hx-post="/projects/{{ project.slug }}/launch-settings"
                     hx-include="#launch-form-{{ project.slug }}"
-                    hx-target="#launch-panel"
+                    hx-target="#launch-panel-inner"
                     hx-swap="outerHTML">
                 💾 Сохранить настройки
             </button>
@@ -146,7 +149,7 @@
                 {% endif %}
                 <button type="button" class="btn btn-secondary btn-sm"
                         hx-post="/projects/{{ project.slug }}/toggle-pause/plan"
-                        hx-target="#launch-panel"
+                        hx-target="#launch-panel-inner"
                         hx-swap="outerHTML">
                     {% if settings.plan_paused %}▶ Возобновить{% else %}⏸ Пауза{% endif %}
                 </button>
@@ -162,7 +165,7 @@
                 {% endif %}
                 <button type="button" class="btn btn-secondary btn-sm"
                         hx-post="/projects/{{ project.slug }}/toggle-pause/gen"
-                        hx-target="#launch-panel"
+                        hx-target="#launch-panel-inner"
                         hx-swap="outerHTML">
                     {% if settings.gen_paused %}▶ Возобновить{% else %}⏸ Пауза{% endif %}
                 </button>
@@ -178,7 +181,7 @@
                 {% endif %}
                 <button type="button" class="btn btn-secondary btn-sm"
                         hx-post="/projects/{{ project.slug }}/toggle-pause/autogen"
-                        hx-target="#launch-panel"
+                        hx-target="#launch-panel-inner"
                         hx-swap="outerHTML">
                     {% if settings.autogen %}Выключить{% else %}Включить{% endif %}
                 </button>

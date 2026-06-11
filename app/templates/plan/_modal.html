@@ -32,6 +32,10 @@
 <div class="alert alert-error">{{ error }}</div>
 {% endif %}
 
+{% if saved %}
+<div class="alert alert-success" style="margin-bottom:.75rem;font-size:.88rem;">✓ Сохранено</div>
+{% endif %}
+
 <!-- Форма редактирования -->
 <form hx-post="/plan/item/{{ item.id }}/save"
       hx-target="#modal-content"

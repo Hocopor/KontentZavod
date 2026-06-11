@@ -608,6 +608,11 @@ _FAKE_ITEM_POST = json.dumps(
             "Сохраните пост — пригодится при следующем планировании контента 👇"
         ),
         "hashtags": ["#маркетинг", "#контент", "#smm", "#охват", "#советы"],
+        "image_prompt": (
+            "social media content creation workspace, laptop with analytics dashboard, "
+            "charts showing growth, modern office, warm lighting, "
+            "flat lay style, no text on image"
+        ),
         "features": {
             "hook_type": "вопрос",
             "topic": "органический охват в соцсетях",

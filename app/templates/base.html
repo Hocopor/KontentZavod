@@ -78,6 +78,73 @@
             color: var(--text);
         }
 
+        /* ── Блок текущего проекта в шапке ── */
+        .nav-project {
+            display: flex;
+            align-items: center;
+            gap: .4rem;
+            flex-shrink: 0;
+            position: relative;
+        }
+        .nav-project-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: .35rem;
+            padding: .28rem .65rem;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            color: var(--text);
+            font-size: .85rem;
+            cursor: pointer;
+            white-space: nowrap;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            user-select: none;
+        }
+        .nav-project-btn:hover { border-color: var(--accent); }
+        .nav-project-btn .caret { color: var(--text2); font-size: .7rem; flex-shrink: 0; }
+        .nav-project-dropdown {
+            display: none;
+            position: absolute;
+            top: calc(100% + 4px);
+            right: 0;
+            min-width: 200px;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            z-index: 200;
+            overflow: hidden;
+        }
+        .nav-project-dropdown.open { display: block; }
+        .nav-project-dropdown a,
+        .nav-project-dropdown button {
+            display: block;
+            width: 100%;
+            padding: .45rem .75rem;
+            font-size: .85rem;
+            color: var(--text);
+            text-decoration: none;
+            background: none;
+            border: none;
+            text-align: left;
+            cursor: pointer;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .nav-project-dropdown a:hover,
+        .nav-project-dropdown button:hover { background: var(--bg3); }
+        .nav-project-dropdown a.current-proj { color: var(--accent2); font-weight: 600; }
+        .nav-project-dropdown .dropdown-divider {
+            height: 1px;
+            background: var(--border);
+            margin: .2rem 0;
+        }
+        .nav-project-none { color: var(--text2); font-style: italic; }
+
         /* ── Часы сервера ── */
         .nav-clock {
             font-size: .78rem;
@@ -422,9 +489,16 @@
     <nav>
         <a href="/" class="nav-brand">КонтентЗавод</a>
         {% set _nav = get_nav_counts() %}
+        {% set _nav_projects = get_nav_projects() %}
+        {% set _cur_slug = request.cookies.get('current_project', '') %}
         <div class="nav-links">
             <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Главная</a>
-            <a href="/projects" {% if request.url.path.startswith("/projects") %}class="active"{% endif %}>Проекты</a>
+            {# «Проект» — ссылка на детальную страницу если есть cookie, иначе на список #}
+            {% if _cur_slug %}
+            <a href="/projects/{{ _cur_slug }}" {% if request.url.path.startswith("/projects") %}class="active"{% endif %}>Проект</a>
+            {% else %}
+            <a href="/projects" {% if request.url.path.startswith("/projects") %}class="active"{% endif %}>Проект</a>
+            {% endif %}
             <a href="/plan" {% if request.url.path.startswith("/plan") %}class="active"{% endif %}
                style="display:inline-flex;align-items:center;gap:.35rem;">
                 Контент-план
@@ -448,7 +522,34 @@
             <a href="/analytics" {% if request.url.path.startswith("/analytics") %}class="active"{% endif %}>Аналитика</a>
             <a href="/proxies" {% if request.url.path.startswith("/proxies") %}class="active"{% endif %}>Прокси</a>
         </div>
-        <div class="nav-clock" id="nav-clock" data-epoch="{{ now_epoch }}">
+        {# Блок текущего проекта — перед часами #}
+        <div class="nav-project" id="nav-project-block">
+            <button type="button" class="nav-project-btn"
+                    onclick="toggleProjectDropdown(event)"
+                    title="Переключить проект">
+                {% set _cur_proj_name = '' %}
+                {% for p in _nav_projects %}{% if p.slug == _cur_slug %}{% set _cur_proj_name = p.name %}{% endif %}{% endfor %}
+                {% if _cur_proj_name %}
+                <span style="overflow:hidden;text-overflow:ellipsis;">{{ _cur_proj_name }}</span>
+                {% else %}
+                <span class="nav-project-none">Проект не выбран</span>
+                {% endif %}
+                <span class="caret">▾</span>
+            </button>
+            <div class="nav-project-dropdown" id="nav-project-dropdown">
+                {% for p in _nav_projects %}
+                <a href="/projects/{{ p.slug }}"
+                   {% if p.slug == _cur_slug %}class="current-proj"{% endif %}>
+                    {% if p.slug == _cur_slug %}✓ {% endif %}{{ p.name }}
+                </a>
+                {% endfor %}
+                {% if _nav_projects %}
+                <div class="dropdown-divider"></div>
+                {% endif %}
+                <a href="/projects/new" style="color:var(--accent2);">＋ Создать проект</a>
+            </div>
+        </div>
+        <div class="nav-clock" id="nav-clock" data-epoch="{{ now_epoch() }}">
             <div class="clock-time" id="clock-time">--:--:--</div>
             <div class="clock-label">время сервера</div>
         </div>
@@ -479,6 +580,22 @@
         tick();
         setInterval(tick, 1000);
     })();
+    </script>
+    <script>
+    // Переключение выпадающего меню выбора проекта
+    function toggleProjectDropdown(e) {
+        e.stopPropagation();
+        var dd = document.getElementById('nav-project-dropdown');
+        if (dd) dd.classList.toggle('open');
+    }
+    // Закрытие при клике вне
+    document.addEventListener('click', function(e) {
+        var block = document.getElementById('nav-project-block');
+        var dd = document.getElementById('nav-project-dropdown');
+        if (dd && block && !block.contains(e.target)) {
+            dd.classList.remove('open');
+        }
+    });
     </script>
 </body>
 </html>

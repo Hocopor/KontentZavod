@@ -30,6 +30,132 @@ logger = logging.getLogger(__name__)
 _USED_TOPICS_LIMIT = 50
 
 
+# ─── Перегенерация контент-плана ──────────────────────────────────────────────
+
+
+def refresh_plan(
+    project_id: int,
+    platform: str | None = None,
+    content_type: str | None = None,
+) -> dict:
+    """
+    Управляемая перегенерация контент-плана проекта.
+
+    Удаляет plan_items со статусом 'proposed' в окне планирования
+    [сегодня; сегодня+plan_horizon_days], с фильтрацией по platform и
+    content_type, затем вызывает generate_plan для затронутых платформ.
+
+    Args:
+        project_id:   ID проекта.
+        platform:     Если задан — ограничить область одной платформой.
+        content_type: Если задан — ограничить область одним типом контента.
+
+    Returns:
+        Словарь {
+            "deleted": int,
+            "created": int,
+            "platforms": [str, ...],
+            "error": str | None,
+        }
+    """
+    from datetime import date as _date_cls, timedelta
+
+    today = _date_cls.today()
+
+    with get_db() as db:
+        project = db.execute(
+            "SELECT * FROM projects WHERE id=?", (project_id,)
+        ).fetchone()
+        if project is None:
+            return {"deleted": 0, "created": 0, "platforms": [], "error": "Проект не найден"}
+
+        settings = get_project_settings(project["settings"])
+        horizon_days: int = int(settings.get("plan_horizon_days", 30))
+        date_from_str = today.isoformat()
+        date_to_str = (today + timedelta(days=horizon_days)).isoformat()
+
+        # Активная стратегия
+        strategy_row = _get_active_strategy(db, project_id)
+        if strategy_row is None:
+            return {
+                "deleted": 0, "created": 0, "platforms": [],
+                "error": "Нет активной стратегии — создайте стратегию перед обновлением плана",
+            }
+
+        # Определить, какие платформы затронуты
+        if platform is not None:
+            platforms_to_regen = [platform]
+        else:
+            # Все включённые платформы проекта
+            pp_rows = db.execute(
+                "SELECT platform FROM project_platforms WHERE project_id=? AND enabled=1",
+                (project_id,),
+            ).fetchall()
+            platforms_to_regen = [r["platform"] for r in pp_rows]
+
+        if not platforms_to_regen:
+            return {"deleted": 0, "created": 0, "platforms": [], "error": None}
+
+        # Удалить proposed-пункты в окне планирования
+        if content_type is not None:
+            db.execute(
+                """
+                DELETE FROM plan_items
+                WHERE project_id=? AND status='proposed'
+                  AND platform=? AND content_type=?
+                  AND date >= ? AND date <= ?
+                """,
+                (project_id, platform, content_type, date_from_str, date_to_str),
+            )
+        elif platform is not None:
+            db.execute(
+                """
+                DELETE FROM plan_items
+                WHERE project_id=? AND status='proposed'
+                  AND platform=?
+                  AND date >= ? AND date <= ?
+                """,
+                (project_id, platform, date_from_str, date_to_str),
+            )
+        else:
+            db.execute(
+                """
+                DELETE FROM plan_items
+                WHERE project_id=? AND status='proposed'
+                  AND date >= ? AND date <= ?
+                """,
+                (project_id, date_from_str, date_to_str),
+            )
+        deleted = db.execute("SELECT changes() as c").fetchone()["c"]
+
+    # Генерация плана для каждой затронутой платформы
+    total_created = 0
+    try:
+        for plat in platforms_to_regen:
+            count = generate_plan_filtered(
+                project_id=project_id,
+                platform=plat,
+                date_from=date_from_str,
+                date_to=date_to_str,
+                only_content_type=content_type,
+            )
+            total_created += count
+    except LLMError as exc:
+        return {
+            "deleted": deleted,
+            "created": total_created,
+            "platforms": platforms_to_regen,
+            "error": f"Ошибка LLM: {exc}",
+        }
+
+    return {
+        "deleted": deleted,
+        "created": total_created,
+        "platforms": platforms_to_regen,
+        "error": None,
+    }
+
+
 # ─── Утилиты парсинга ─────────────────────────────────────────────────────────
 
 
@@ -188,6 +314,183 @@ def _profile_block(project) -> str:
 
 
 # ─── Основная функция ─────────────────────────────────────────────────────────
+
+
+def generate_plan_filtered(
+    project_id: int,
+    platform: str,
+    date_from: str,
+    date_to: str,
+    only_content_type: str | None = None,
+) -> int:
+    """
+    Генерирует контент-план с опциональной фильтрацией по типу контента.
+
+    При only_content_type != None в промпт передаётся только этот тип, и
+    вставляются только items с данным content_type.
+
+    Args:
+        project_id:        ID проекта в БД.
+        platform:          Ключ платформы.
+        date_from:         Начало периода YYYY-MM-DD.
+        date_to:           Конец периода YYYY-MM-DD.
+        only_content_type: Если задан — генерировать только для этого типа.
+
+    Returns:
+        Число созданных пунктов плана.
+
+    Raises:
+        LLMError: при ошибке LLM.
+    """
+    with get_db() as db:
+        project = db.execute(
+            "SELECT * FROM projects WHERE id=?", (project_id,)
+        ).fetchone()
+        if project is None:
+            logger.warning("generate_plan_filtered: project_id=%d не найден", project_id)
+            return 0
+
+        strategy_row = _get_active_strategy(db, project_id)
+        if strategy_row is None:
+            logger.warning(
+                "generate_plan_filtered: project_id=%d — нет активной стратегии", project_id
+            )
+            return 0
+
+        try:
+            strategy_data = json.loads(strategy_row["strategy"]) if strategy_row["strategy"] else {}
+        except (json.JSONDecodeError, TypeError):
+            strategy_data = {}
+        platforms_section = strategy_data.get("platforms", {})
+        platform_strategy = platforms_section.get(platform)
+        if platform_strategy is None:
+            logger.warning(
+                "generate_plan_filtered: project_id=%d, platform=%s — нет секции в стратегии",
+                project_id, platform,
+            )
+            return 0
+
+        enabled_types = _get_enabled_types(db, project_id, platform)
+
+        # При точечной перегенерации — оставить только запрошенный тип
+        if only_content_type is not None:
+            if only_content_type not in enabled_types or not enabled_types[only_content_type]:
+                logger.warning(
+                    "generate_plan_filtered: content_type=%r не включён для %s",
+                    only_content_type, platform,
+                )
+                return 0
+            # Фильтруем enabled_types до одного
+            enabled_types = {only_content_type: True}
+
+        active_types = {t for t, on in enabled_types.items() if on}
+        if not active_types:
+            logger.warning(
+                "generate_plan_filtered: project_id=%d, platform=%s — нет включённых типов",
+                project_id, platform,
+            )
+            return 0
+
+        learnings_text = _get_learnings(db, project_id)
+        used_topics_text = _get_used_topics(db, project_id, platform)
+        strategy_id = strategy_row["id"]
+
+    profile_text = _profile_block(project)
+    platform_strategy_text = json.dumps(platform_strategy, ensure_ascii=False, indent=2)
+    content_types_text = _content_types_block(platform, enabled_types)
+
+    prompt = load_prompt(
+        "plan",
+        PROFILE=profile_text,
+        PLATFORM=platform,
+        PLATFORM_STRATEGY=platform_strategy_text,
+        CONTENT_TYPES=content_types_text,
+        DATE_FROM=date_from,
+        DATE_TO=date_to,
+        LEARNINGS=learnings_text,
+        USED_TOPICS=used_topics_text,
+    )
+    messages = [{"role": "user", "content": prompt}]
+
+    raw = chat(messages, purpose="plan", json_mode=True)
+    try:
+        items = _parse_plan_json(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("generate_plan_filtered: первая попытка парсинга провалилась (%s), retry", exc)
+        retry_messages = messages + [
+            {"role": "assistant", "content": raw},
+            {
+                "role": "user",
+                "content": (
+                    f"Ошибка парсинга JSON: {exc}. Ответь ТОЛЬКО валидным JSON-объектом "
+                    'вида {"items": [...]} без пояснений и без markdown-фенсов.'
+                ),
+            },
+        ]
+        raw2 = chat(retry_messages, purpose="plan", json_mode=True)
+        items = _parse_plan_json(raw2)
+
+    try:
+        df = _date.fromisoformat(date_from)
+        dt = _date.fromisoformat(date_to)
+    except ValueError:
+        logger.error(
+            "generate_plan_filtered: неверный формат дат: %s — %s", date_from, date_to
+        )
+        return 0
+
+    inserted = 0
+    with get_db() as db:
+        for item in items:
+            raw_date = (item.get("date") or "").strip()
+            try:
+                item_date = _date.fromisoformat(raw_date)
+            except ValueError:
+                continue
+            if item_date < df or item_date > dt:
+                continue
+
+            ctype = (item.get("content_type") or "").strip()
+            if not catalog.is_valid(platform, ctype):
+                continue
+            if ctype not in active_types:
+                continue
+
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+
+            time_slot = (item.get("time") or "12:00").strip()
+            if not re.match(r"^\d{2}:\d{2}$", time_slot):
+                time_slot = "12:00"
+
+            brief = item.get("brief")
+            brief_json = json.dumps(brief, ensure_ascii=False) if isinstance(brief, dict) else None
+
+            existing = db.execute(
+                "SELECT id FROM plan_items "
+                "WHERE project_id=? AND platform=? AND content_type=? AND date=? AND title=?",
+                (project_id, platform, ctype, raw_date, title),
+            ).fetchone()
+            if existing is not None:
+                continue
+
+            db.execute(
+                """
+                INSERT INTO plan_items
+                    (project_id, strategy_id, platform, content_type, date, time_slot,
+                     title, brief, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed')
+                """,
+                (project_id, strategy_id, platform, ctype, raw_date, time_slot, title, brief_json),
+            )
+            inserted += 1
+
+    logger.info(
+        "generate_plan_filtered: project_id=%d, platform=%s, type=%s, %s–%s → %d пунктов",
+        project_id, platform, only_content_type or "all", date_from, date_to, inserted,
+    )
+    return inserted
 
 
 def generate_plan(

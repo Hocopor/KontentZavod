@@ -246,15 +246,16 @@ def request_via_proxy(
         with httpx.Client(timeout=timeout) as c:
             return c.request(method, url, **kwargs)
 
-    # Открываем БД (используем переданное соединение или создаём своё)
+    # Открываем БД (используем переданное соединение или создаём своё).
+    # ВАЖНО: __enter__ у контекст-менеджера вызывается РОВНО ОДИН раз —
+    # повторный вызов у _GeneratorContextManager падает с AttributeError.
     if _db is not None:
-        proxies = list_active_proxies(_db)
+        conn = _db
         db_ctx = None
     else:
-        # Открываем временное соединение
-        from app.db import get_db as _get_db
-        db_ctx = _get_db()
-        proxies = list_active_proxies(db_ctx.__enter__())
+        db_ctx = get_db()
+        conn = db_ctx.__enter__()
+    proxies = list_active_proxies(conn)
 
     try:
         if not proxies:
@@ -277,10 +278,7 @@ def request_via_proxy(
                     resp = client.request(method, url, **kwargs)
 
                 # Успех — любой HTTP-ответ (4xx/5xx от сервера тоже успех прокси)
-                if _db is not None:
-                    _mark_proxy_ok(_db, proxy_id)
-                elif db_ctx is not None:
-                    _mark_proxy_ok(db_ctx.__enter__(), proxy_id)
+                _mark_proxy_ok(conn, proxy_id)
                 return resp
 
             except (
@@ -293,10 +291,7 @@ def request_via_proxy(
                 logger.warning(
                     "Прокси id=%s (%s) недоступен: %s", proxy_id, proxy_url, err_text
                 )
-                if _db is not None:
-                    _mark_proxy_fail(_db, proxy_id, err_text)
-                elif db_ctx is not None:
-                    _mark_proxy_fail(db_ctx.__enter__(), proxy_id, err_text)
+                _mark_proxy_fail(conn, proxy_id, err_text)
                 last_exc = exc
                 continue
 

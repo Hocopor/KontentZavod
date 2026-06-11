@@ -7,10 +7,12 @@
 Все тесты работают с FAKE_TTS=1 (без сети).
 ffmpeg/ffprobe-зависимые тесты пропускаются, если бинари недоступны.
 """
+import asyncio
 import math
 import re
 import shutil
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -130,6 +132,110 @@ def test_unknown_voice_raises(tmp_path, monkeypatch):
 
     with pytest.raises(TTSError, match="Неизвестный голос"):
         synthesize_scenes(["Привет"], tmp_path, voice="unknown_voice")
+
+
+# ─── Тесты proxy-фейловера ───────────────────────────────────────────────────
+
+
+def _make_fake_audio_chunks():
+    """Минимальный async-генератор, имитирующий успешный стрим от edge-tts."""
+    async def _gen():
+        # Минимальный валидный MP3-заголовок (ID3) — тесту хватит
+        yield {"type": "audio", "data": b"\xff\xfb\x90\x00" + b"\x00" * 413}
+        yield {
+            "type": "WordBoundary",
+            "offset": 0,
+            "duration": 5_000_000,
+            "text": "Привет",
+        }
+    return _gen()
+
+
+def test_proxy_fallback_on_direct_failure(tmp_path, monkeypatch):
+    """
+    При провале прямой попытки edge-tts должен уйти через прокси.
+
+    Мокаем:
+      - edge_tts.Communicate: первый вызов (proxy=None) бросает RuntimeError,
+        второй (с proxy) возвращает успешный стрим.
+      - app.pipeline.tts._get_http_proxies: возвращает один прокси-словарь.
+      - _ffprobe_duration: возвращает 1.0 (не вызываем реальный ffprobe).
+    """
+    monkeypatch.delenv("FAKE_TTS", raising=False)
+
+    from app.pipeline import tts as tts_mod
+
+    # Счётчик вызовов Communicate
+    call_count = 0
+
+    class FakeCommunicate:
+        def __init__(self, text, voice, *, boundary=None, proxy=None, **kw):
+            nonlocal call_count
+            call_count += 1
+            self._proxy = proxy
+
+        def stream(self):
+            if self._proxy is None:
+                # Первый вызов без прокси — провал
+                raise RuntimeError("403 Forbidden (simulated)")
+            # Второй вызов с прокси — успех
+            return _make_fake_audio_chunks()
+
+    # Patch edge_tts.Communicate внутри tts модуля
+    fake_edge_tts = MagicMock()
+    fake_edge_tts.Communicate = FakeCommunicate
+
+    one_proxy = [{"url": "http://proxy.example.com:3128/", "id": 1}]
+
+    with (
+        patch.dict("sys.modules", {"edge_tts": fake_edge_tts}),
+        patch.object(tts_mod, "_get_http_proxies", return_value=one_proxy),
+        patch.object(tts_mod, "_ffprobe_duration", return_value=1.0),
+    ):
+        out_path = tmp_path / "voice_01.mp3"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        words = tts_mod._synthesize_one_with_retry(
+            "Привет", "ru-RU-DmitryNeural", out_path
+        )
+
+    # Должны были быть два вызова: один прямой + один через прокси
+    assert call_count == 2, f"Ожидали 2 вызова Communicate, получили {call_count}"
+    # Тайминг одного слова должен присутствовать
+    assert len(words) == 1, f"Ожидали 1 слово, получили {words}"
+    assert words[0][0] == "Привет"
+
+
+def test_proxy_fallback_error_message(tmp_path, monkeypatch):
+    """
+    Если все прокси провалились — TTSError содержит подсказку про /proxies.
+    """
+    monkeypatch.delenv("FAKE_TTS", raising=False)
+
+    from app.pipeline import tts as tts_mod
+
+    class AlwaysFailCommunicate:
+        def __init__(self, *a, **kw):
+            pass
+
+        def stream(self):
+            raise RuntimeError("403 always")
+
+    fake_edge_tts = MagicMock()
+    fake_edge_tts.Communicate = AlwaysFailCommunicate
+
+    one_proxy = [{"url": "http://proxy.example.com:3128/", "id": 1}]
+
+    with (
+        patch.dict("sys.modules", {"edge_tts": fake_edge_tts}),
+        patch.object(tts_mod, "_get_http_proxies", return_value=one_proxy),
+    ):
+        from app.pipeline.tts import TTSError
+
+        with pytest.raises(TTSError, match="/proxies"):
+            tts_mod._synthesize_one_with_retry(
+                "Привет", "ru-RU-DmitryNeural", tmp_path / "voice_01.mp3"
+            )
 
 
 # ─── Тесты build_ass ─────────────────────────────────────────────────────────

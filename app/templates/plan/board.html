@@ -211,6 +211,30 @@ table.board td.row-head.type-header {
 }
 .empty-state .empty-icon { font-size: 3rem; margin-bottom: 1rem; }
 
+/* Спиннер refresh */
+.refresh-spinner {
+    display: none;
+    font-size: .8rem;
+    color: var(--text2);
+    margin-left: .4rem;
+}
+.htmx-request .refresh-spinner { display: inline; }
+
+/* Кнопка refresh платформы / типа */
+.btn-refresh-inline {
+    font-size: .72rem;
+    padding: .1rem .35rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg3);
+    color: var(--text2);
+    cursor: pointer;
+    vertical-align: middle;
+    margin-left: .3rem;
+    line-height: 1.4;
+}
+.btn-refresh-inline:hover { background: var(--bg2); color: var(--text); }
+
 /* Модалка */
 #modal-overlay {
     display: none;
@@ -263,6 +287,18 @@ table.board td.row-head.type-header {
 
 <h1 style="margin-bottom:1rem;">Контент-план</h1>
 
+<!-- Зона флеша перегенерации (устойчивый id — hx-target) -->
+<div id="plan-board-area">
+{% if refresh_flash is defined and refresh_flash %}
+{% if refresh_flash.error %}
+<div class="alert alert-danger" style="margin-bottom:1rem;">⚠️ {{ refresh_flash.error }}</div>
+{% else %}
+<div class="alert alert-success" style="margin-bottom:1rem;">
+    ✅ Обновлено: удалено {{ refresh_flash.deleted }} предложенных, добавлено {{ refresh_flash.created }}
+</div>
+{% endif %}
+{% endif %}
+
 {% if not project %}
 <!-- Пустое состояние: нет проектов -->
 <div class="card empty-state">
@@ -281,6 +317,12 @@ table.board td.row-head.type-header {
 </div>
 
 {% else %}
+
+{% if not cookie_project %}
+<div class="alert alert-info" style="margin-bottom:1rem;font-size:.88rem;">
+    Выберите проект в шапке, чтобы видеть только его.
+</div>
+{% endif %}
 
 <!-- ── Тулбар ── -->
 <div class="plan-toolbar">
@@ -329,6 +371,19 @@ table.board td.row-head.type-header {
             ⚡ Генерация одобренного: {% if settings.autogen %}ВКЛ{% else %}ВЫКЛ{% endif %}
         </button>
     </form>
+
+    <!-- Обновить контент-план (перегенерация proposed) -->
+    <button class="btn btn-secondary btn-sm"
+            hx-post="/plan/refresh/{{ project.slug }}"
+            hx-target="#plan-board-area"
+            hx-swap="outerHTML"
+            hx-disabled-elt="this"
+            hx-indicator="#refresh-all-spinner"
+            hx-confirm="Перегенерировать весь план? Одобренные пункты не затронутся."
+            title="Перегенерирует только не одобренные пункты; одобренные не трогаются">
+        🔄 Обновить контент-план
+        <span id="refresh-all-spinner" class="refresh-spinner">⏳</span>
+    </button>
 
     <!-- Бейджи пауз -->
     {% if settings.plan_paused %}
@@ -392,14 +447,36 @@ table.board td.row-head.type-header {
 <!-- Строка-заголовок платформы -->
 <tr>
     <td class="row-head platform-header" colspan="{{ day_headers | length + 1 }}"
+        style="display:flex;align-items:center;gap:.4rem;"
         onclick="togglePlatform('{{ plat_row.platform }}')">
         ▾ {{ plat_row.platform_label }}
+        <button class="btn-refresh-inline"
+                hx-post="/plan/refresh/{{ project.slug }}/{{ plat_row.platform }}"
+                hx-target="#plan-board-area"
+                hx-swap="outerHTML"
+                hx-disabled-elt="this"
+                hx-confirm="Перегенерировать план для {{ plat_row.platform_label }}? Одобренные пункты не затронутся."
+                title="Перегенерировать proposed для {{ plat_row.platform_label }}"
+                onclick="event.stopPropagation()">
+            🔄
+        </button>
     </td>
 </tr>
 {% for tr in plat_row.type_rows %}
 <!-- Строка типа контента (сворачивается вместе с платформой) -->
 <tr class="plat-{{ plat_row.platform }}-rows">
-    <td class="row-head type-header">{{ tr.type_label }}</td>
+    <td class="row-head type-header">
+        {{ tr.type_label }}
+        <button class="btn-refresh-inline"
+                hx-post="/plan/refresh/{{ project.slug }}/{{ plat_row.platform }}/{{ tr.content_type }}"
+                hx-target="#plan-board-area"
+                hx-swap="outerHTML"
+                hx-disabled-elt="this"
+                hx-confirm="Перегенерировать «{{ tr.type_label }}» для {{ plat_row.platform_label }}? Одобренные пункты не затронутся."
+                title="Перегенерировать proposed для типа «{{ tr.type_label }}»">
+            🔄
+        </button>
+    </td>
     {% for day_items in tr.cells %}
     {% set dh = day_headers[loop.index0] %}
     <td class="cell{% if day_items | length == 0 %} empty{% endif %}{% if dh.today %} today{% endif %}">
@@ -425,6 +502,8 @@ table.board td.row-head.type-header {
 
 {% endif %}<!-- /rows_data -->
 {% endif %}<!-- /project -->
+
+</div><!-- /plan-board-area -->
 
 <!-- HTMX: обновление модалки -->
 <div id="modal-trigger-container" style="display:none;"

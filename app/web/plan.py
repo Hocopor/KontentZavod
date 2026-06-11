@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from app import catalog
 from app.db import get_db, get_project_settings
 from app.templates_env import templates
+from app.pipeline.planner import refresh_plan
 
 router = APIRouter(prefix="/plan")
 
@@ -243,7 +244,13 @@ def _get_item_or_404(db, item_id: int):
     return db.execute("SELECT * FROM plan_items WHERE id=?", (item_id,)).fetchone()
 
 
-def _render_modal(request: Request, db, item_id: int, error: str | None = None):
+def _render_modal(
+    request: Request,
+    db,
+    item_id: int,
+    error: str | None = None,
+    saved: bool = False,
+):
     """Рендер фрагмента модалки для item."""
     row = _get_item_or_404(db, item_id)
     if row is None:
@@ -262,6 +269,7 @@ def _render_modal(request: Request, db, item_id: int, error: str | None = None):
     return templates.TemplateResponse(request, "plan/_modal.html", {
         "item": item,
         "error": error,
+        "saved": saved,
     })
 
 
@@ -278,6 +286,7 @@ async def plan_board(
     """
     Главная страница шахматки.
     ?project=slug&year=2026&month=6
+    Если задан cookie current_project — показываем только его.
     """
     today = date.today()
     if year == 0:
@@ -288,6 +297,9 @@ async def plan_board(
     # Ограничить диапазон
     year = max(2020, min(2099, year))
     month = max(1, min(12, month))
+
+    # Читаем cookie текущего проекта (если query-параметр не задан явно)
+    cookie_slug = request.cookies.get("current_project", "")
 
     with get_db() as db:
         all_projects = _get_projects_list(db)
@@ -312,12 +324,18 @@ async def plan_board(
                 "next_year": year if month < 12 else year + 1,
                 "next_month": month + 1 if month < 12 else 1,
                 "today": today,
+                "cookie_project": None,
             })
 
-        # Выбор проекта: из query или первый running/active
+        # Выбор проекта:
+        # 1. query-параметр ?project=slug (явный выбор пользователя)
+        # 2. cookie current_project (текущий проект)
+        # 3. первый running, потом первый active
         proj_row = None
         if project:
             proj_row = _get_project_by_slug(db, project)
+        if proj_row is None and cookie_slug:
+            proj_row = _get_project_by_slug(db, cookie_slug)
         if proj_row is None:
             # Предпочитаем running
             for p in all_projects:
@@ -330,6 +348,8 @@ async def plan_board(
         ctx = _build_board_context(db, dict(proj_row), year, month)
         ctx["all_projects"] = all_projects
         ctx["running_count"] = running_count
+        # Передаём флаг: выбор ограничен cookie
+        ctx["cookie_project"] = cookie_slug if cookie_slug else None
 
     return templates.TemplateResponse(request, "plan/board.html", ctx)
 
@@ -419,9 +439,9 @@ async def plan_item_save(request: Request, item_id: int):
             ),
         )
 
-    # Вернуть обновлённую модалку
+    # Вернуть обновлённую модалку с флагом «Сохранено»
     with get_db() as db:
-        return _render_modal(request, db, item_id)
+        return _render_modal(request, db, item_id, saved=True)
 
 
 @router.post("/item/{item_id}/approve", response_class=HTMLResponse)
@@ -507,6 +527,144 @@ async def approve_period(
         url=f"/plan?project={slug}&year={year}&month={month}",
         status_code=303,
     )
+
+
+@router.post("/refresh/{slug}", response_class=HTMLResponse)
+async def refresh_plan_all(request: Request, slug: str):
+    """
+    Перегенерировать все proposed-пункты плана проекта (все включённые платформы).
+    HTMX: возвращает обновлённый фрагмент шахматки с флеш-сообщением.
+    """
+    with get_db() as db:
+        proj = _get_project_by_slug(db, slug)
+        if proj is None:
+            return HTMLResponse("Проект не найден", status_code=404)
+        project_id = proj["id"]
+
+    result = refresh_plan(project_id)
+    return _render_refresh_response(request, slug, result)
+
+
+@router.post("/refresh/{slug}/{platform}", response_class=HTMLResponse)
+async def refresh_plan_platform(request: Request, slug: str, platform: str):
+    """
+    Перегенерировать proposed-пункты одной платформы.
+    """
+    if platform not in ("telegram", "vk", "youtube", "instagram", "dzen"):
+        return HTMLResponse(f"Неизвестная платформа: {platform}", status_code=422)
+
+    with get_db() as db:
+        proj = _get_project_by_slug(db, slug)
+        if proj is None:
+            return HTMLResponse("Проект не найден", status_code=404)
+        project_id = proj["id"]
+
+        # Проверить, что платформа включена в проекте
+        pp = db.execute(
+            "SELECT enabled FROM project_platforms WHERE project_id=? AND platform=?",
+            (project_id, platform),
+        ).fetchone()
+        if pp is None or not pp["enabled"]:
+            return HTMLResponse(
+                f"Платформа «{_PLATFORM_LABELS.get(platform, platform)}» не включена в проекте",
+                status_code=422,
+            )
+
+    result = refresh_plan(project_id, platform=platform)
+    return _render_refresh_response(request, slug, result)
+
+
+@router.post("/refresh/{slug}/{platform}/{content_type}", response_class=HTMLResponse)
+async def refresh_plan_content_type(
+    request: Request, slug: str, platform: str, content_type: str
+):
+    """
+    Точечная перегенерация одного типа контента на платформе.
+    """
+    if platform not in ("telegram", "vk", "youtube", "instagram", "dzen"):
+        return HTMLResponse(f"Неизвестная платформа: {platform}", status_code=422)
+
+    if not catalog.is_valid(platform, content_type):
+        return HTMLResponse(
+            f"Тип «{content_type}» не существует для платформы «{_PLATFORM_LABELS.get(platform, platform)}»",
+            status_code=422,
+        )
+
+    with get_db() as db:
+        proj = _get_project_by_slug(db, slug)
+        if proj is None:
+            return HTMLResponse("Проект не найден", status_code=404)
+        project_id = proj["id"]
+
+        # Проверить, что тип включён в project_platforms.content_types
+        pp = db.execute(
+            "SELECT enabled, content_types FROM project_platforms WHERE project_id=? AND platform=?",
+            (project_id, platform),
+        ).fetchone()
+        if pp is None or not pp["enabled"]:
+            return HTMLResponse(
+                f"Платформа «{_PLATFORM_LABELS.get(platform, platform)}» не включена в проекте",
+                status_code=422,
+            )
+
+        ct_map: dict = {}
+        if pp["content_types"]:
+            try:
+                ct_map = json.loads(pp["content_types"])
+            except (json.JSONDecodeError, TypeError):
+                ct_map = {}
+
+        allowed = catalog.allowed_types(platform)
+        info = allowed.get(content_type)
+        if info is None:
+            return HTMLResponse(
+                f"Тип «{content_type}» не существует в каталоге для «{_PLATFORM_LABELS.get(platform, platform)}»",
+                status_code=422,
+            )
+        # default_on или значение из ct_map
+        enabled_flag = ct_map.get(content_type, info["default_on"])
+        if not enabled_flag:
+            type_label = info["label"]
+            plat_label = _PLATFORM_LABELS.get(platform, platform)
+            return HTMLResponse(
+                f"Тип «{type_label}» выключен для платформы «{plat_label}» — включите его в настройках проекта",
+                status_code=422,
+            )
+
+    result = refresh_plan(project_id, platform=platform, content_type=content_type)
+    return _render_refresh_response(request, slug, result)
+
+
+def _render_refresh_response(request: Request, slug: str, result: dict) -> HTMLResponse:
+    """Рендер HTMX-ответа после перегенерации: флеш + обновлённая шахматка."""
+    today = date.today()
+
+    if result.get("error"):
+        flash_html = (
+            f'<div id="refresh-flash" class="alert alert-danger" style="margin-bottom:1rem;">'
+            f'⚠️ {result["error"]}</div>'
+        )
+    else:
+        deleted = result.get("deleted", 0)
+        created = result.get("created", 0)
+        flash_html = (
+            f'<div id="refresh-flash" class="alert alert-success" style="margin-bottom:1rem;">'
+            f'✅ Обновлено: удалено {deleted} предложенных, добавлено {created}</div>'
+        )
+
+    with get_db() as db:
+        proj = _get_project_by_slug(db, slug)
+        if proj is None:
+            return HTMLResponse(flash_html, status_code=200)
+
+        ctx = _build_board_context(db, dict(proj), today.year, today.month)
+        ctx["all_projects"] = _get_projects_list(db)
+        ctx["running_count"] = _get_running_projects_count(db)
+        ctx["cookie_project"] = request.cookies.get("current_project", "") or None
+        ctx["refresh_flash"] = result
+
+    from app.templates_env import templates as _tpl
+    return _tpl.TemplateResponse(request, "plan/board.html", ctx)
 
 
 @router.post("/autogen/{slug}", response_class=HTMLResponse)

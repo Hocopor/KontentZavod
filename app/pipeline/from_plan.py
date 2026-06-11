@@ -24,6 +24,7 @@ from app.pipeline.prompts import load_prompt
 from app.pipeline.script import _PLATFORM_SPECS
 from app.pipeline.video_script import generate_video_script
 from app.config import settings
+from app.services.textfmt import md_to_plain
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ def _parse_item_post(raw: str) -> dict:
         raise ValueError("Отсутствует поле 'text'")
     if not isinstance(data.get("features"), dict):
         raise ValueError("Отсутствует или невалидно поле 'features'")
+    # image_prompt — необязательное поле (LLM может забыть, но промпт требует)
     return data
 
 
@@ -214,18 +216,25 @@ def _generate_text(db, item, project, brief) -> int:
     hashtags = data.get("hashtags") or []
     if not isinstance(hashtags, list):
         hashtags = []
+    image_prompt: str | None = data.get("image_prompt") or None
+
+    # Для ручных платформ (instagram, dzen) конвертируем в plain text уже на этапе генерации
+    # (ручная очередь копирует текст напрямую, без конверсии на этапе публикации)
+    plain_text = md_to_plain(text)
 
     # texts в формате существующих паблишеров — только секция своей платформы
     if platform == "telegram":
+        # Telegram конвертирует md → HTML на этапе публикации, сохраняем оригинал
         texts = {"telegram": {"text": text, "hashtags": hashtags}}
     elif platform == "vk":
+        # VK конвертирует md → plain на этапе публикации, сохраняем оригинал
         texts = {"vk": {"text": text, "hashtags": hashtags}}
     elif platform == "instagram":
-        texts = {"instagram": {"caption": text, "hashtags": hashtags}}
+        texts = {"instagram": {"caption": plain_text, "hashtags": hashtags}}
     elif platform == "dzen":
-        texts = {"dzen": {"title": title, "text": text}}
+        texts = {"dzen": {"title": title, "text": plain_text}}
     else:
-        texts = {platform: {"text": text, "hashtags": hashtags}}
+        texts = {platform: {"text": plain_text, "hashtags": hashtags}}
 
     content_db_type = "article" if content_type == "article" else "post"
 
@@ -244,7 +253,42 @@ def _generate_text(db, item, project, brief) -> int:
                 json.dumps(data["features"], ensure_ascii=False),
             ),
         )
-        return cur.lastrowid
+        content_id = cur.lastrowid
+
+    # ── Картинка к посту (если LLM вернул image_prompt) ─────────────────────
+    if image_prompt:
+        try:
+            media_dir = settings.data_dir_absolute / "media" / str(content_id)
+            media_dir.mkdir(parents=True, exist_ok=True)
+            image_path_obj = media_dir / "post.jpg"
+
+            if settings.FAKE_ASSETS:
+                _fake_image(image_path_obj)
+                ok = True
+            else:
+                ok = _fetch_pollinations_image([image_prompt], image_path_obj)
+
+            if ok:
+                files = {"image_path": str(image_path_obj.absolute())}
+                with get_db() as wdb:
+                    wdb.execute(
+                        "UPDATE content SET files=?, updated_at=datetime('now') WHERE id=?",
+                        (json.dumps(files, ensure_ascii=False), content_id),
+                    )
+            else:
+                logger.warning(
+                    "_generate_text: не удалось скачать картинку Pollinations "
+                    "(content_id=%d) — пост без картинки",
+                    content_id,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "_generate_text: ошибка при скачивании картинки (content_id=%d): %s "
+                "— пост без картинки",
+                content_id, exc,
+            )
+
+    return content_id
 
 
 def _generate_story(db, item, project, brief) -> int:

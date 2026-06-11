@@ -3,6 +3,16 @@
 {% block title %}{{ project.name }} — КонтентЗавод{% endblock %}
 
 {% block content %}
+
+{% if saved == 'platform' %}
+<div class="alert alert-success mb-2">✓ Настройки площадки сохранены</div>
+{% endif %}
+
+<!-- Кнопка назад к списку -->
+<div style="margin-bottom:1rem;">
+    <a href="/projects" class="btn btn-secondary btn-sm">← К списку проектов</a>
+</div>
+
 <!-- Шапка -->
 <div class="flex-center gap-md mb-2" style="justify-content:space-between; flex-wrap:wrap;">
     <div>

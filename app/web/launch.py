@@ -145,7 +145,8 @@ def _save_settings(db, project_id: int, form_data: dict) -> dict:
     return new_settings
 
 
-def _build_launch_context(db, project, error: str | None = None) -> dict:
+def _build_launch_context(db, project, error: str | None = None,
+                          notice: str | None = None) -> dict:
     """Собрать контекст для рендера _launch.html."""
     settings_data = get_project_settings(project["settings"])
     enabled_platforms = _get_enabled_platforms(db, project["id"])
@@ -187,6 +188,7 @@ def _build_launch_context(db, project, error: str | None = None) -> dict:
         "enabled_platforms": platforms_ctx,
         "strategy": strategy_status,
         "error": error,
+        "notice": notice,
     }
 
 
@@ -218,7 +220,7 @@ async def launch_settings_save(request: Request, slug: str):
         _save_settings(db, project["id"], form_data)
         # Перечитать проект после обновления
         project = _get_project_by_slug(db, slug)
-        ctx = _build_launch_context(db, project)
+        ctx = _build_launch_context(db, project, notice="✓ Настройки сохранены")
 
     return templates.TemplateResponse(request, "projects/_launch.html", ctx)
 

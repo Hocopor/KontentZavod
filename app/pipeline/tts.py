@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from app.config import settings
 
@@ -119,9 +120,14 @@ async def _synthesize_one(
     text: str,
     voice_id: str,
     out_path: Path,
+    proxy: Optional[str] = None,
 ) -> list[tuple[str, float, float]]:
     """
     Синтезировать одну сцену через edge-tts.
+
+    Args:
+        proxy: опциональный HTTP-прокси (http://user:pass@host:port).
+               В edge-tts >= 7.2 передаётся напрямую в Communicate(proxy=...).
 
     Returns:
         Список (слово, start_сек, end_сек) — тайминги относительно начала сцены.
@@ -130,9 +136,15 @@ async def _synthesize_one(
 
     words: list[tuple[str, float, float]] = []
     audio_chunks: list[bytes] = []
-    last_word_offset: int = 0   # в тиках, для расчёта end у последнего слова
 
-    communicate = edge_tts.Communicate(text, voice_id)
+    # boundary='WordBoundary' обязателен с edge-tts >= 7.2
+    # (в 7.2 умолчание изменилось на SentenceBoundary).
+    communicate = edge_tts.Communicate(
+        text,
+        voice_id,
+        boundary="WordBoundary",
+        proxy=proxy,
+    )
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
             audio_chunks.append(chunk["data"])
@@ -143,10 +155,26 @@ async def _synthesize_one(
             start_s  = offset / _TICKS_PER_SEC
             end_s    = (offset + duration) / _TICKS_PER_SEC
             words.append((word, start_s, end_s))
-            last_word_offset = offset + duration
 
     out_path.write_bytes(b"".join(audio_chunks))
     return words
+
+
+def _get_http_proxies() -> list[dict]:
+    """
+    Возвращает активные HTTP-прокси из БД (socks5 пропускаются).
+    При отсутствии таблицы proxies — возвращает [].
+    """
+    try:
+        from app.db import get_db  # noqa: PLC0415
+        from app.services.proxies import list_active_proxies  # noqa: PLC0415
+
+        with get_db() as db:
+            all_proxies = list_active_proxies(db)
+        return [p for p in all_proxies if not p["url"].lower().startswith("socks5://")]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Не удалось загрузить прокси из БД: %s", exc)
+        return []
 
 
 def _synthesize_one_with_retry(
@@ -154,20 +182,36 @@ def _synthesize_one_with_retry(
     voice_id: str,
     out_path: Path,
 ) -> list[tuple[str, float, float]]:
-    """Обёртка с одним повтором при сетевой ошибке."""
-    for attempt in range(2):
+    """
+    Синтез с фейловером через прокси при 403.
+
+    Алгоритм:
+        1. Попытка без прокси.
+        2. При любой ошибке — последовательно пробуем активные HTTP-прокси из БД.
+        3. Если все попытки провалились — TTSError с подсказкой по прокси.
+    """
+    # Попытка 1: напрямую
+    try:
+        return asyncio.run(_synthesize_one(text, voice_id, out_path, proxy=None))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("edge-tts: прямая попытка провалилась (%s), пробую прокси…", exc)
+        last_exc: Exception = exc
+
+    # Попытки через прокси
+    for proxy in _get_http_proxies():
+        proxy_url = proxy["url"]
         try:
-            return asyncio.run(_synthesize_one(text, voice_id, out_path))
-        except Exception as exc:  # noqa: BLE001
-            if attempt == 0:
-                logger.warning(
-                    "edge-tts: ошибка на попытке 1, повторяю: %s", exc
-                )
-            else:
-                raise TTSError(
-                    f"edge-tts не смог синтезировать текст после 2 попыток: {exc}"
-                ) from exc
-    return []  # unreachable
+            result = asyncio.run(_synthesize_one(text, voice_id, out_path, proxy=proxy_url))
+            logger.info("edge-tts: синтез успешен через прокси %s", proxy_url)
+            return result
+        except Exception as exc2:  # noqa: BLE001
+            logger.warning("edge-tts: прокси %s тоже не помог: %s", proxy_url, exc2)
+            last_exc = exc2
+
+    raise TTSError(
+        f"edge-tts не смог синтезировать текст: {last_exc} — "
+        "edge-tts заблокирован для IP сервера — добавьте рабочий HTTP-прокси на /proxies"
+    ) from last_exc
 
 
 # ─── Синтез одной сцены: заглушка ────────────────────────────────────────────

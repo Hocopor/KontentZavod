@@ -19,7 +19,7 @@ import re
 import unicodedata
 
 import httpx
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.db import get_db
@@ -363,12 +363,23 @@ def _build_detail_context(slug: str) -> dict | None:
 
 
 @router.get("/{slug}", response_class=HTMLResponse)
-async def project_detail(request: Request, slug: str):
+async def project_detail(request: Request, slug: str, saved: str = ""):
     ctx = _build_detail_context(slug)
     if ctx is None:
         return HTMLResponse("Проект не найден", status_code=404)
 
-    return templates.TemplateResponse(request, "projects/detail.html", ctx)
+    ctx["saved"] = saved  # flash: 'platform' → «✓ Сохранено»
+
+    response = templates.TemplateResponse(request, "projects/detail.html", ctx)
+    # Устанавливаем cookie текущего проекта (год — max_age=31536000)
+    response.set_cookie(
+        key="current_project",
+        value=slug,
+        max_age=31_536_000,
+        httponly=False,
+        samesite="lax",
+    )
+    return response
 
 
 # ─── Редактирование профиля ───────────────────────────────────────────────────
@@ -625,7 +636,7 @@ async def platform_save(
                 (project["id"], platform, enabled_int, mode, config_json, final_credentials),
             )
 
-    return RedirectResponse(f"/projects/{slug}", status_code=303)
+    return RedirectResponse(f"/projects/{slug}?saved=platform", status_code=303)
 
 
 # ─── Проверка подключения площадки (HTMX) ────────────────────────────────────
@@ -745,7 +756,12 @@ def _check_vk(credentials: dict, config: dict) -> HTMLResponse:
         return _check_html_err(
             f"VK API {err.get('error_code')}: {err.get('error_msg', 'ошибка')}"
         )
-    groups = data.get("response", [])
+    # VK API ≥5.141: response = {"groups": [...]}; старые версии — просто список
+    response = data.get("response", [])
+    if isinstance(response, dict):
+        groups = response.get("groups", [])
+    else:
+        groups = response
     name = groups[0].get("name", "?") if groups else "группа найдена"
     return _check_html_ok(f"группа «{name}» доступна")
 

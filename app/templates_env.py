@@ -18,3 +18,22 @@ templates.env.globals["get_nav_counts"] = get_nav_counts
 
 # Epoch-метка серверного времени — тикающие часы в base.html
 templates.env.globals["now_epoch"] = time.time
+
+
+def get_nav_projects() -> list[dict]:
+    """
+    Список активных проектов для выпадающего меню в шапке.
+    Graceful при отсутствии таблицы (как get_nav_counts).
+    """
+    try:
+        from app.db import get_db
+        with get_db() as db:
+            rows = db.execute(
+                "SELECT id, slug, name FROM projects WHERE status='active' ORDER BY name"
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+templates.env.globals["get_nav_projects"] = get_nav_projects

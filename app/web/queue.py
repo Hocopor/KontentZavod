@@ -306,7 +306,8 @@ async def queue_board(
     project: str = "",
     month: str = "",
 ):
-    """Главная страница: шахматка + ручная публикация + вне плана."""
+    """Главная страница: шахматка + ручная публикация + вне плана.
+    Если задан cookie current_project — показываем только его."""
     today = date.today()
     year = today.year
     month_int = today.month
@@ -317,6 +318,9 @@ async def queue_board(
             month_int = max(1, min(12, int(parts[1])))
         except (ValueError, IndexError):
             year, month_int = today.year, today.month
+
+    # Читаем cookie текущего проекта
+    cookie_slug = request.cookies.get("current_project", "")
 
     with get_db() as db:
         all_projects = _get_projects_list(db)
@@ -345,8 +349,15 @@ async def queue_board(
                 "manual_items": [],
                 "orphan_content": [],
                 "enable_scheduler": settings.ENABLE_SCHEDULER,
+                "cookie_project": None,
             })
 
+        # Выбор проекта:
+        # 1. query-параметр ?project=slug (явный выбор)
+        # 2. cookie current_project
+        # 3. первый running, потом первый active
+        if proj_row is None and cookie_slug:
+            proj_row = _get_project_by_slug(db, cookie_slug)
         if proj_row is None:
             for p in all_projects:
                 if p["stage"] == "running":
@@ -361,6 +372,7 @@ async def queue_board(
         ctx["manual_items"] = _get_manual_pending(db, proj_dict["id"])
         ctx["orphan_content"] = _get_orphan_content(db)
         ctx["enable_scheduler"] = settings.ENABLE_SCHEDULER
+        ctx["cookie_project"] = cookie_slug if cookie_slug else None
 
     return templates.TemplateResponse(request, "queue/index.html", ctx)
 
