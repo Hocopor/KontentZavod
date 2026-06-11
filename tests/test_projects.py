@@ -9,11 +9,12 @@
    - в БД хранится НЕ плейнтекст
    - decrypt возвращает исходный токен
 5. Удаление пустого проекта — ОК
-6. Удаление проекта с content — запрещено (409)
+6. Каскадное удаление проекта с контентом + schedule + файлами
 7. Архивация и разархивация
 """
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -185,32 +186,73 @@ def test_delete_empty_project(client):
     assert resp.status_code == 404
 
 
-def test_delete_project_with_content_forbidden(client, patch_env):
-    """Удаление проекта с content — должно вернуть 409."""
+def test_delete_project_with_content_cascades(client, patch_env):
+    """
+    Каскадное удаление: проект с контентом + schedule + временными файлами →
+    303 на /projects, проект исчезает, контент и schedule тоже удалены, файлы удалены.
+    """
     import app.config as cfg_module
-    slug = create_project(client, name="Нельзя удалить")
+    slug = create_project(client, name="Каскадное удаление")
 
-    # Вставляем контент напрямую в БД
     db_path = str(cfg_module.settings.db_path_absolute)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+
     project_id = conn.execute(
         "SELECT id FROM projects WHERE slug=?", (slug,)
     ).fetchone()["id"]
 
-    conn.execute(
-        """
-        INSERT INTO content (project_id, type, title, status)
-        VALUES (?, 'post', 'Тестовый пост', 'draft')
-        """,
+    # Создаём контент
+    cur = conn.execute(
+        "INSERT INTO content (project_id, type, title, status) VALUES (?, 'post', 'Пост', 'approved')",
         (project_id,),
     )
+    content_id = cur.lastrowid
+
+    # Создаём schedule
+    conn.execute(
+        "INSERT INTO schedule (content_id, platform, planned_at, status) VALUES (?, 'telegram', '2026-06-15 10:00:00', 'planned')",
+        (content_id,),
+    )
+
+    # Создаём plan_item
+    conn.execute(
+        "INSERT INTO plan_items (project_id, platform, content_type, date, title, status, content_id) "
+        "VALUES (?, 'telegram', 'post', '2026-06-15', 'Пункт', 'generated', ?)",
+        (project_id, content_id),
+    )
     conn.commit()
+
+    # Создаём временный файл, который должен быть удалён
+    data_dir = Path(str(cfg_module.settings.data_dir_absolute))
+    videos_dir = data_dir / "videos"
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    fake_video = videos_dir / f"{content_id}.mp4"
+    fake_video.write_text("fake video")
+
     conn.close()
 
+    # Удаляем проект
     resp = client.post(f"/projects/{slug}/delete", follow_redirects=False)
-    assert resp.status_code == 409
-    assert "Нельзя удалить" in resp.text or "content" in resp.text or "архив" in resp.text.lower()
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/projects"
+
+    # Проект исчез
+    resp = client.get(f"/projects/{slug}")
+    assert resp.status_code == 404
+
+    # Контент, schedule, plan_item удалены из БД
+    conn2 = sqlite3.connect(db_path)
+    conn2.row_factory = sqlite3.Row
+    conn2.execute("PRAGMA foreign_keys=ON")
+    assert conn2.execute("SELECT id FROM content WHERE id=?", (content_id,)).fetchone() is None
+    assert conn2.execute("SELECT id FROM schedule WHERE content_id=?", (content_id,)).fetchone() is None
+    assert conn2.execute("SELECT id FROM plan_items WHERE project_id=?", (project_id,)).fetchone() is None
+    conn2.close()
+
+    # Файл удалён
+    assert not fake_video.exists()
 
 
 def test_archive_and_unarchive(client):

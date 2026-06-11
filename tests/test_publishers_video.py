@@ -219,7 +219,7 @@ def test_real_vk_video_api_error(tmp_path, monkeypatch):
 
 def test_real_telegram_video_success(tmp_path, monkeypatch):
     """Реальный режим Telegram + видео → URL t.me/..."""
-    import httpx
+    import app.services.proxies as proxies_mod
     from app.publishers.telegram import publish_telegram
 
     files = _make_video_files(tmp_path)
@@ -228,7 +228,14 @@ def test_real_telegram_video_success(tmp_path, monkeypatch):
         def json(self):
             return {"ok": True, "result": {"message_id": 777}}
 
-    monkeypatch.setattr(httpx, "post", lambda *a, **kw: FakeResp())
+    class FakeClient:
+        def __init__(self, proxy=None, timeout=None):
+            pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def request(self, method, url, **kwargs): return FakeResp()
+
+    monkeypatch.setattr(proxies_mod.httpx, "Client", FakeClient)
 
     url = publish_telegram(
         schedule_id=6,

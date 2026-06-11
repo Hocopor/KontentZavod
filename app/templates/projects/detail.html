@@ -32,16 +32,12 @@
             <button class="btn btn-success btn-sm">Восстановить</button>
         </form>
         {% endif %}
-        <form method="post" action="/projects/{{ project.slug }}/delete" style="display:inline;">
-            <button class="btn btn-danger btn-sm"
-                    onclick="return confirm('Удалить проект навсегда? Это нельзя отменить.')">Удалить</button>
+        <form method="post" action="/projects/{{ project.slug }}/delete" style="display:inline;"
+              onsubmit="return confirm('Удалить проект «{{ project.name }}» навсегда?\n\nБУДЕТ УДАЛЁН ВЕСЬ КОНТЕНТ ПРОЕКТА (посты, видео, план, расписание) — безвозвратно.\n\nПродолжить?')">
+            <button class="btn btn-danger btn-sm">Удалить</button>
         </form>
     </div>
 </div>
-
-{% if delete_error %}
-<div class="alert alert-error">{{ delete_error }}</div>
-{% endif %}
 
 <!-- 1. Профиль -->
 <details class="card mb-2" {% if completeness < 80 %}open{% endif %}>

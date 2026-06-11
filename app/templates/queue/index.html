@@ -472,16 +472,36 @@
 
 <!-- ── Вне плана ── -->
 {% if orphan_content %}
-<details class="orphan-section">
+{% set _orphan_status_labels = {
+    "draft":         "Черновик",
+    "text_review":   "Черновик",
+    "production":    "В продакшне",
+    "review":        "На ревью",
+    "approved":      "Одобрено",
+    "rejected":      "Отклонено",
+    "published":     "Опубликовано",
+    "manual_done":   "Опубликовано вручную",
+    "manual_pending":"Ждёт публикации",
+} %}
+<details class="orphan-section" id="orphan-section">
     <summary>
         Вне плана
         <span class="badge" style="background:var(--bg3);color:var(--text2);font-size:.75rem;
               padding:.1rem .45rem;border-radius:999px;">{{ orphan_content | length }}</span>
     </summary>
     <p class="text-muted" style="font-size:.83rem;margin-bottom:.7rem;">
-        Контент без связанного пункта плана — старый флоу или удалённые из плана пункты.
-        Можно безопасно удалить.
+        Контент без связанного пункта плана — старый флоу или удалённые из плана пункты,
+        а также весь контент архивированных проектов. Можно безопасно удалить.
     </p>
+    <div style="margin-bottom:.6rem;">
+        <button type="button" class="btn btn-danger btn-sm"
+                hx-post="/queue/orphans/delete-all"
+                hx-target="#orphan-section"
+                hx-swap="outerHTML"
+                hx-confirm="Удалить ВЕСЬ контент из секции «Вне плана» ({{ orphan_content | length }} ед.)? Это безвозвратно.">
+            Удалить всё ({{ orphan_content | length }})
+        </button>
+    </div>
     <table class="orphan-table">
         <thead>
             <tr>
@@ -498,10 +518,10 @@
         {% for oc in orphan_content %}
         <tr id="orphan-row-{{ oc.id }}">
             <td style="color:var(--text2);">{{ oc.id }}</td>
-            <td>{{ oc.project_name }}</td>
+            <td>{{ oc.project_name }}{% if oc.project_status == 'archived' %} <span style="color:var(--text2);font-size:.75rem;">(архив)</span>{% endif %}</td>
             <td>{{ oc.type }}</td>
             <td>{{ (oc.title or '')[:60] or '—' }}</td>
-            <td>{{ oc.status }}</td>
+            <td>{{ _orphan_status_labels.get(oc.status, oc.status) }}</td>
             <td style="color:var(--text2);">{{ (oc.created_at or '')[:10] }}</td>
             <td>
                 <button type="button" class="btn btn-danger btn-sm"

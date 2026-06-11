@@ -184,6 +184,19 @@ CREATE TABLE IF NOT EXISTS plan_items (
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- HTTP-прокси для обхода блокировок (Telegram API и т.п.)
+CREATE TABLE IF NOT EXISTS proxies (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    label         TEXT,
+    url_encrypted TEXT    NOT NULL,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    priority      INTEGER NOT NULL DEFAULT 100,
+    fail_count    INTEGER NOT NULL DEFAULT 0,
+    last_ok_at    TEXT,
+    last_error    TEXT,
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Индексы для частых запросов
 CREATE INDEX IF NOT EXISTS idx_projects_status      ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_ideas_project        ON ideas(project_id, status);
@@ -241,6 +254,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # колонка уже существует
+
+    # 5. Таблица proxies (добавлена в этапе 7.6 — прокси-подсистема)
+    # Таблица создаётся через SCHEMA выше; миграция здесь для уже существующих БД без неё.
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS proxies (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                label         TEXT,
+                url_encrypted TEXT    NOT NULL,
+                enabled       INTEGER NOT NULL DEFAULT 1,
+                priority      INTEGER NOT NULL DEFAULT 100,
+                fail_count    INTEGER NOT NULL DEFAULT 0,
+                last_ok_at    TEXT,
+                last_error    TEXT,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
     # 4. Пересборка content: расширяем CHECK type
     # Проверяем, нужна ли пересборка (нет 'story' в определении таблицы)

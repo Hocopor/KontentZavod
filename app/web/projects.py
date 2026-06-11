@@ -25,6 +25,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from app.db import get_db
 from app.llm import LLMError
 from app.security import encrypt, decrypt
+from app.services.cleanup import delete_content_files
+from app.services.proxies import request_via_proxy
 from app.templates_env import templates
 
 router = APIRouter(prefix="/projects")
@@ -475,6 +477,13 @@ async def project_unarchive(slug: str):
 
 @router.post("/{slug}/delete")
 async def project_delete(request: Request, slug: str):
+    """
+    Каскадное удаление проекта вместе со всем его контентом.
+    PRAGMA foreign_keys=ON в get_db гарантирует каскад по FK
+    (project_platforms, ideas, content → schedule → metrics, learnings,
+    strategies, plan_items).
+    Файлы контента удаляются после закрытия соединения.
+    """
     with get_db() as db:
         project = db.execute(
             "SELECT id FROM projects WHERE slug=?", (slug,)
@@ -482,26 +491,18 @@ async def project_delete(request: Request, slug: str):
         if project is None:
             return HTMLResponse("Проект не найден", status_code=404)
 
-        content_count = db.execute(
-            "SELECT COUNT(*) FROM content WHERE project_id=?", (project["id"],)
-        ).fetchone()[0]
+        # Собрать id контента до удаления (для очистки файлов)
+        content_rows = db.execute(
+            "SELECT id FROM content WHERE project_id=?", (project["id"],)
+        ).fetchall()
+        content_ids = [r["id"] for r in content_rows]
 
-        if content_count > 0:
-            ctx = _build_detail_context(slug)
-            if ctx is None:
-                return HTMLResponse("Проект не найден", status_code=404)
-            ctx["delete_error"] = (
-                f"Нельзя удалить проект: у него есть {content_count} ед. контента. "
-                "Сначала заархивируйте проект."
-            )
-            return templates.TemplateResponse(
-                request,
-                "projects/detail.html",
-                ctx,
-                status_code=409,
-            )
-
+        # Каскадное удаление: FK в get_db включены (PRAGMA foreign_keys=ON)
         db.execute("DELETE FROM projects WHERE id=?", (project["id"],))
+
+    # Удалить файлы после закрытия соединения
+    for cid in content_ids:
+        delete_content_files(cid)
 
     return RedirectResponse("/projects", status_code=303)
 
@@ -703,7 +704,9 @@ def _check_telegram(credentials: dict, config: dict) -> HTMLResponse:
     if not bot_token:
         return _check_html_err("bot_token не задан")
     try:
-        resp = httpx.get(
+        # api.telegram.org с сервера в РФ доступен только через прокси-пул (/proxies)
+        resp = request_via_proxy(
+            "GET",
             f"https://api.telegram.org/bot{bot_token}/getMe",
             timeout=10,
         )

@@ -20,6 +20,7 @@ from app.web.launch import router as launch_router
 from app.web.strategy import router as strategy_router
 from app.web.plan import router as plan_router
 from app.web.queue import router as queue_router
+from app.web.proxies import router as proxies_router
 
 
 @asynccontextmanager
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(strategy_router)
     app.include_router(plan_router)
     app.include_router(queue_router)
+    app.include_router(proxies_router)
 
     return app
 

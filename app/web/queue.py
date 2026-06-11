@@ -14,8 +14,6 @@
 """
 import json
 import logging
-import shutil
-from pathlib import Path
 from datetime import date
 
 import calendar as _calendar_mod
@@ -27,6 +25,7 @@ from app import catalog
 from app.config import settings
 from app.db import get_db
 from app.publishers.manual import mark_manual_done
+from app.services.cleanup import delete_content_files
 from app.templates_env import templates
 
 logger = logging.getLogger(__name__)
@@ -41,13 +40,22 @@ _MONTH_NAMES = [
 ]
 
 _STATUS_LABELS: dict[str, str] = {
+    # Статусы plan_items
     "generating":    "Генерируется",
     "generated":     "Готово",
     "error":         "Ошибка",
+    # Статусы schedule
     "planned":       "Запланировано",
     "published":     "Опубликовано",
     "manual_pending":"Ждёт ручной публикации",
     "manual_done":   "Опубликовано вручную",
+    # Статусы content (старый флоу v1, для таблицы «Вне плана»)
+    "draft":         "Черновик",
+    "text_review":   "Черновик",
+    "production":    "В продакшне",
+    "review":        "На ревью",
+    "approved":      "Одобрено",
+    "rejected":      "Отклонено",
 }
 
 # dot-классы для легенды и ячеек
@@ -75,26 +83,8 @@ _CANCEL_FORBIDDEN = {"published", "manual_pending", "manual_done", "publishing"}
 
 # ─── Вспомогательные: работа с файлами ───────────────────────────────────────
 
-
-def _delete_content_files(content_id: int) -> None:
-    """Удалить media-папку и финальные файлы для content_id."""
-    data_dir = settings.data_dir_absolute
-    # media/{content_id}/
-    media_dir = data_dir / "media" / str(content_id)
-    if media_dir.exists():
-        shutil.rmtree(media_dir, ignore_errors=True)
-        logger.debug("queue: удалена media/%s/", content_id)
-    # videos/{content_id}.mp4 / .jpg
-    for ext in ("mp4", "jpg"):
-        p = data_dir / "videos" / f"{content_id}.{ext}"
-        if p.exists():
-            p.unlink(missing_ok=True)
-            logger.debug("queue: удалён videos/%s.%s", content_id, ext)
-    # images/{content_id}.jpg (story)
-    img = data_dir / "images" / f"{content_id}.jpg"
-    if img.exists():
-        img.unlink(missing_ok=True)
-        logger.debug("queue: удалён images/%s.jpg", content_id)
+# Алиас для обратной совместимости внутри модуля
+_delete_content_files = delete_content_files
 
 
 # ─── Вспомогательные: БД ──────────────────────────────────────────────────────
@@ -283,19 +273,24 @@ def _get_manual_pending(db, project_id: int) -> list[dict]:
 
 def _get_orphan_content(db) -> list[dict]:
     """
-    Вернуть контент без связанного plan_item (осиротевший).
-    Это контент старого флоу или после удаления plan_item.
+    Вернуть осиротевший контент: показываем ВСЕ статусы (включая rejected/published
+    из старого флоу v1) в двух случаях:
+    (а) нет связанного plan_item вообще;
+    (б) есть plan_item, но проект архивирован — шахматка /queue показывает только
+        активные проекты, значит такой контент иначе нигде не виден.
     """
     rows = db.execute(
         """
         SELECT c.id, c.project_id, c.type, c.title, c.status, c.created_at,
-               p.name AS project_name
+               p.name AS project_name, p.status AS project_status
           FROM content c
           JOIN projects p ON p.id = c.project_id
-         WHERE NOT EXISTS (
-               SELECT 1 FROM plan_items pi WHERE pi.content_id = c.id
+         WHERE (
+               NOT EXISTS (
+                   SELECT 1 FROM plan_items pi WHERE pi.content_id = c.id
                )
-           AND c.status NOT IN ('rejected')
+               OR p.status = 'archived'
+         )
          ORDER BY c.created_at DESC
         """,
     ).fetchall()
@@ -592,7 +587,7 @@ async def queue_manual_done(
 
 @router.post("/orphans/{content_id}/delete", response_class=HTMLResponse)
 async def queue_orphan_delete(content_id: int):
-    """Удалить осиротевший контент (без plan_item) + файлы + schedule."""
+    """Удалить осиротевший контент + файлы + schedule."""
     with get_db() as db:
         crow = db.execute("SELECT id FROM content WHERE id=?", (content_id,)).fetchone()
         if crow is None:
@@ -605,5 +600,43 @@ async def queue_orphan_delete(content_id: int):
 
     return HTMLResponse(
         f"<span style='color:var(--text2);font-size:.85rem;'>Контент #{content_id} удалён</span>",
+        status_code=200,
+    )
+
+
+@router.post("/orphans/delete-all", response_class=HTMLResponse)
+async def queue_orphan_delete_all():
+    """
+    Удалить ВЕСЬ осиротевший контент из текущей выборки _get_orphan_content.
+    Используется кнопкой «Удалить всё» в секции «Вне плана».
+    """
+    # Собираем id текущей выборки (тот же запрос, что _get_orphan_content)
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT c.id
+              FROM content c
+              JOIN projects p ON p.id = c.project_id
+             WHERE (
+                   NOT EXISTS (
+                       SELECT 1 FROM plan_items pi WHERE pi.content_id = c.id
+                   )
+                   OR p.status = 'archived'
+             )
+            """,
+        ).fetchall()
+        content_ids = [r["id"] for r in rows]
+
+        for cid in content_ids:
+            db.execute("DELETE FROM schedule WHERE content_id=?", (cid,))
+            db.execute("DELETE FROM content WHERE id=?", (cid,))
+
+    # Удалить файлы после закрытия соединения
+    for cid in content_ids:
+        _delete_content_files(cid)
+
+    n = len(content_ids)
+    return HTMLResponse(
+        f"<div class='alert alert-info'>Удалено {n} ед. контента.</div>",
         status_code=200,
     )

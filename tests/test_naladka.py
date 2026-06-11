@@ -378,8 +378,11 @@ class TestPlatformCheck:
             "result": {"id": 123, "username": "testbot", "first_name": "TestBot"},
         }
 
-        import httpx
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        # getMe ходит через прокси-пул — мокаем request_via_proxy в модуле projects
+        import app.web.projects as projects_module
+        monkeypatch.setattr(
+            projects_module, "request_via_proxy", lambda *a, **kw: mock_resp
+        )
 
         resp = client.post(f"/projects/{slug}/platforms/telegram/check")
         assert resp.status_code == 200
@@ -393,8 +396,9 @@ class TestPlatformCheck:
         self._setup_telegram(client, slug, pid)
 
         import httpx
+        import app.web.projects as projects_module
         monkeypatch.setattr(
-            httpx, "get",
+            projects_module, "request_via_proxy",
             lambda *a, **kw: (_ for _ in ()).throw(httpx.ConnectError("timeout")),
         )
 

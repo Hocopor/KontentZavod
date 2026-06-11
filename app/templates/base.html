@@ -446,6 +446,7 @@
                 {% endif %}
             </a>
             <a href="/analytics" {% if request.url.path.startswith("/analytics") %}class="active"{% endif %}>Аналитика</a>
+            <a href="/proxies" {% if request.url.path.startswith("/proxies") %}class="active"{% endif %}>Прокси</a>
         </div>
         <div class="nav-clock" id="nav-clock" data-epoch="{{ now_epoch }}">
             <div class="clock-time" id="clock-time">--:--:--</div>

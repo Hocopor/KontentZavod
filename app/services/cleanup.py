@@ -1,6 +1,7 @@
 """
 Очистка медиафайлов после публикации и ротация диска.
 
+delete_content_files()  — удалить медиафайлы одной единицы контента
 cleanup_after_render()  — удалить ассеты (исходники) после рендера видео
 rotate_media()          — ротация по политике хранения MEDIA_RETENTION_DAYS
 """
@@ -13,6 +14,34 @@ from app.config import settings
 from app.db import get_db, get_project_settings
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Удаление файлов одной единицы контента ──────────────────────────────────
+
+
+def delete_content_files(content_id: int) -> None:
+    """
+    Удалить media-папку и финальные файлы для content_id.
+    Вызывается после DELETE FROM content — когда соединение уже закрыто.
+    Вызывается из web/queue.py и web/projects.py.
+    """
+    data_dir = settings.data_dir_absolute
+    # media/{content_id}/
+    media_dir = data_dir / "media" / str(content_id)
+    if media_dir.exists():
+        shutil.rmtree(media_dir, ignore_errors=True)
+        logger.debug("cleanup: удалена media/%s/", content_id)
+    # videos/{content_id}.mp4 / .jpg
+    for ext in ("mp4", "jpg"):
+        p = data_dir / "videos" / f"{content_id}.{ext}"
+        if p.exists():
+            p.unlink(missing_ok=True)
+            logger.debug("cleanup: удалён videos/%s.%s", content_id, ext)
+    # images/{content_id}.jpg (story)
+    img = data_dir / "images" / f"{content_id}.jpg"
+    if img.exists():
+        img.unlink(missing_ok=True)
+        logger.debug("cleanup: удалён images/%s.jpg", content_id)
 
 
 # ─── Очистка после рендера ────────────────────────────────────────────────────

@@ -222,14 +222,22 @@ def test_real_mode_api_error_retry(db_with_data, monkeypatch):
     import app.config as cfg_module
     monkeypatch.setattr(cfg_module.settings, "PUBLISH_DRY_RUN", False)
 
-    # Мокаем httpx.post → возвращает {"ok": false, "description": "chat not found"}
+    # Мокаем httpx.Client в proxies-сервисе → возвращает {"ok": false}
+    import app.services.proxies as proxies_mod
     import httpx
 
     class FakeResponse:
         def json(self):
             return {"ok": False, "description": "chat not found"}
 
-    monkeypatch.setattr(httpx, "post", lambda *a, **kw: FakeResponse())
+    class FakeClient:
+        def __init__(self, proxy=None, timeout=None):
+            pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def request(self, method, url, **kwargs): return FakeResponse()
+
+    monkeypatch.setattr(proxies_mod.httpx, "Client", FakeClient)
 
     content_id = db_with_data["content_id"]
     sid = _insert_schedule(content_id, "telegram", _past())
@@ -255,13 +263,21 @@ def test_real_mode_three_failures_become_error(db_with_data, monkeypatch):
     import app.config as cfg_module
     monkeypatch.setattr(cfg_module.settings, "PUBLISH_DRY_RUN", False)
 
+    import app.services.proxies as proxies_mod
     import httpx
 
     class FakeResponse:
         def json(self):
             return {"ok": False, "description": "chat not found"}
 
-    monkeypatch.setattr(httpx, "post", lambda *a, **kw: FakeResponse())
+    class FakeClient:
+        def __init__(self, proxy=None, timeout=None):
+            pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def request(self, method, url, **kwargs): return FakeResponse()
+
+    monkeypatch.setattr(proxies_mod.httpx, "Client", FakeClient)
 
     content_id = db_with_data["content_id"]
     sid = _insert_schedule(content_id, "telegram", _past())

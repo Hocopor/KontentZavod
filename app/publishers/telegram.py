@@ -8,6 +8,10 @@ Config JSON:      {"channel_id": "@mychannel" или "-100..."}
 При наличии files["video_path"] отправляет sendVideo (приоритет над preview_path).
 При наличии files["preview_path"] (без видео) отправляет sendPhoto.
 Иначе sendMessage.
+
+Все реальные запросы к Bot API идут через request_via_proxy() (app/services/proxies.py),
+что обеспечивает автоматический фейловер через HTTP-прокси.
+Если прокси не настроены — используется прямой запрос (dev-режим).
 """
 import logging
 from pathlib import Path
@@ -15,6 +19,7 @@ from pathlib import Path
 import httpx
 
 from app.publishers.base import PublishError, dry_run_publish
+from app.services.proxies import request_via_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -77,27 +82,30 @@ def publish_telegram(
         if has_video:
             if not Path(video_path).exists():  # type: ignore[arg-type]
                 raise PublishError(f"Telegram: видео-файл не найден: {video_path}")
-            url = TELEGRAM_API.format(token=bot_token, method="sendVideo")
+            api_url = TELEGRAM_API.format(token=bot_token, method="sendVideo")
             with open(video_path, "rb") as vf:  # type: ignore[arg-type]
-                resp = httpx.post(
-                    url,
+                resp = request_via_proxy(
+                    "POST",
+                    api_url,
                     data={"chat_id": channel_id, "caption": full_text, "supports_streaming": "1"},
                     files={"video": vf},
                     timeout=120,
                 )
         elif has_image:
-            url = TELEGRAM_API.format(token=bot_token, method="sendPhoto")
+            api_url = TELEGRAM_API.format(token=bot_token, method="sendPhoto")
             with open(preview_path, "rb") as img:  # type: ignore[arg-type]
-                resp = httpx.post(
-                    url,
+                resp = request_via_proxy(
+                    "POST",
+                    api_url,
                     data={"chat_id": channel_id, "caption": full_text},
                     files={"photo": img},
                     timeout=30,
                 )
         else:
-            url = TELEGRAM_API.format(token=bot_token, method="sendMessage")
-            resp = httpx.post(
-                url,
+            api_url = TELEGRAM_API.format(token=bot_token, method="sendMessage")
+            resp = request_via_proxy(
+                "POST",
+                api_url,
                 json={"chat_id": channel_id, "text": full_text, "parse_mode": "HTML"},
                 timeout=30,
             )
