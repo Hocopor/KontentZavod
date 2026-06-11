@@ -178,6 +178,33 @@ table.board td.row-head.type-header {
     margin-bottom: .5rem;
 }
 
+/* Меню очистки плана */
+.plan-clear-menu {
+    position: relative;
+    display: inline-block;
+}
+.plan-clear-menu > summary {
+    list-style: none;
+    cursor: pointer;
+}
+.plan-clear-menu > summary::-webkit-details-marker { display: none; }
+.plan-clear-menu[open] > summary { opacity: .8; }
+.plan-clear-dropdown {
+    position: absolute;
+    top: calc(100% + .3rem);
+    left: 0;
+    z-index: 100;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 4px 16px rgba(0,0,0,.35);
+    padding: .4rem;
+    display: flex;
+    flex-direction: column;
+    gap: .3rem;
+    min-width: 220px;
+}
+
 /* Бейджи пауз */
 .pause-badge {
     display: inline-flex;
@@ -289,14 +316,8 @@ table.board td.row-head.type-header {
 
 <!-- Зона флеша перегенерации (устойчивый id — hx-target) -->
 <div id="plan-board-area">
-{% if refresh_flash is defined and refresh_flash %}
-{% if refresh_flash.error %}
-<div class="alert alert-danger" style="margin-bottom:1rem;">⚠️ {{ refresh_flash.error }}</div>
-{% else %}
-<div class="alert alert-success" style="margin-bottom:1rem;">
-    ✅ Обновлено: удалено {{ refresh_flash.deleted }} предложенных, добавлено {{ refresh_flash.created }}
-</div>
-{% endif %}
+{% if flash_html is defined and flash_html %}
+{{ flash_html | safe }}
 {% endif %}
 
 {% if not project %}
@@ -384,6 +405,37 @@ table.board td.row-head.type-header {
         🔄 Обновить контент-план
         <span id="refresh-all-spinner" class="refresh-spinner">⏳</span>
     </button>
+
+    <!-- Меню очистки плана -->
+    <details class="plan-clear-menu">
+        <summary class="btn btn-secondary btn-sm">🧹 Очистка…</summary>
+        <div class="plan-clear-dropdown">
+            <button class="btn btn-sm btn-danger"
+                    hx-post="/plan/clear/{{ project.slug }}/all"
+                    hx-target="#plan-board-area"
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this"
+                    hx-confirm="Удалить ВЕСЬ план проекта? Удалятся ВСЕ пункты — включая одобренные, запланированные и ОПУБЛИКОВАННЫЕ — вместе с контентом, файлами и расписанием. История публикаций пропадёт. Это необратимо.">
+                Очистить весь план
+            </button>
+            <button class="btn btn-sm btn-secondary"
+                    hx-post="/plan/clear/{{ project.slug }}/unpublished"
+                    hx-target="#plan-board-area"
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this"
+                    hx-confirm="Удалить все пункты, кроме опубликованных? Удалятся предложенные, одобренные, сгенерированные и запланированные — с их контентом и файлами. Останется только опубликованное.">
+                Удалить неопубликованное
+            </button>
+            <button class="btn btn-sm btn-secondary"
+                    hx-post="/plan/clear/{{ project.slug }}/unapproved"
+                    hx-target="#plan-board-area"
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this"
+                    hx-confirm="Удалить все неодобренные пункты (предложенные, отклонённые, ошибки) вместе с их черновиками? Одобренное, сгенерированное и опубликованное останется.">
+                Удалить неодобренное
+            </button>
+        </div>
+    </details>
 
     <!-- Бейджи пауз -->
     {% if settings.plan_paused %}

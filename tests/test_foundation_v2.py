@@ -506,11 +506,24 @@ class TestFakeLLM:
             assert data[key]  # не пустая строка
 
     def test_strategy_structure(self, patch_env):
-        """purpose='strategy' → JSON со всеми 5 платформами и корректными типами."""
+        """purpose='strategy' (v2) → JSON с фазами, площадками и корректными типами в mix."""
         data = self._chat("strategy")
         assert "summary" in data
         assert "positioning" in data
         assert "platforms" in data
+        assert "phases" in data
+
+        # Фазы v2
+        phases = data["phases"]
+        assert isinstance(phases, list) and len(phases) >= 1
+        for ph in phases:
+            assert "weeks" in ph and "goal_share" in ph and "mix" in ph
+            assert sum(ph["goal_share"].values()) == 100
+            for platform, types in ph["mix"].items():
+                for ctype in types:
+                    assert is_valid(platform, ctype), (
+                        f"phase mix: тип '{ctype}' не в каталоге для '{platform}'"
+                    )
 
         platforms = data["platforms"]
         expected_platforms = {"telegram", "vk", "instagram", "youtube", "dzen"}
@@ -522,38 +535,36 @@ class TestFakeLLM:
             assert "goals" in info
             assert "rubrics" in info
             assert isinstance(info["rubrics"], list)
-            assert "content_mix" in info
-            assert isinstance(info["content_mix"], dict)
+            # rubrics — объекты {name, goal, description}
+            for r in info["rubrics"]:
+                assert isinstance(r, dict)
+                assert "name" in r and "goal" in r
             assert "best_times" in info
             assert isinstance(info["best_times"], list)
             assert "kpi" in info
-
-            # content_mix должен содержать только типы из каталога для этой платформы
-            for ctype in info["content_mix"]:
-                assert is_valid(platform, ctype), (
-                    f"Тип '{ctype}' не существует для платформы '{platform}' в каталоге"
-                )
+            # content_mix в platforms НЕ задаётся (материализует код build_strategy)
+            assert "content_mix" not in info
 
     def test_strategy_revise_structure(self, patch_env):
-        """purpose='strategy_revise' → то же, что strategy + changes_summary."""
+        """purpose='strategy_revise' (v2) → фазы + площадки + changes_summary."""
         data = self._chat("strategy_revise")
-        # Те же поля, что у strategy
         assert "summary" in data
         assert "platforms" in data
+        assert "phases" in data
         assert set(data["platforms"].keys()) == {"telegram", "vk", "instagram", "youtube", "dzen"}
-        # Плюс changes_summary
         assert "changes_summary" in data
         assert isinstance(data["changes_summary"], str)
         assert data["changes_summary"]
 
-    def test_strategy_revise_content_mix_valid(self, patch_env):
-        """purpose='strategy_revise' — content_mix только из каталога."""
+    def test_strategy_revise_phase_mix_valid(self, patch_env):
+        """purpose='strategy_revise' — mix фаз только из каталога."""
         data = self._chat("strategy_revise")
-        for platform, info in data["platforms"].items():
-            for ctype in info["content_mix"]:
-                assert is_valid(platform, ctype), (
-                    f"strategy_revise: тип '{ctype}' не в каталоге для '{platform}'"
-                )
+        for ph in data["phases"]:
+            for platform, types in ph["mix"].items():
+                for ctype in types:
+                    assert is_valid(platform, ctype), (
+                        f"strategy_revise phase mix: тип '{ctype}' не в каталоге для '{platform}'"
+                    )
 
     def test_plan_structure(self, patch_env):
         """purpose='plan' → JSON с массивом items с нужными полями."""

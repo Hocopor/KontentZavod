@@ -88,6 +88,16 @@ FAKE_LLM=1 (для тестов и локальной разработки бе�
       {title, image_prompt (en), overlay_text, caption,
        features: {hook_type, topic, length, format, ab_variant}}
 
+  purpose='directives_parse' → JSON с массивом директив:
+      {"directives": [
+        {"text": "...", "scope": "plan",
+         "parsed": {"platform": "telegram", "content_type": "post", "per_week": 7}},
+        {"text": "...", "scope": "strategy", "parsed": null}
+      ]}
+
+  purpose='strategy_check' → JSON результата проверки стратегии:
+      {"ok": true, "violations": []}
+
   purpose=None / прочие → строка 'FAKE_LLM response'
 
 ────────────────────────────────────────────────────────────
@@ -399,49 +409,94 @@ _FAKE_PROFILE = json.dumps(
     ensure_ascii=False,
 )
 
+# Стратегия v2 (этап 8.2): фазы + goal_share + mix; rubrics — объекты {name, goal, description};
+# content_mix в platforms НЕ задаётся — его материализует код build_strategy из mix первой фазы.
 _FAKE_STRATEGY = json.dumps(
     {
         "summary": (
-            "Контент-стратегия направлена на формирование экспертного образа бренда "
-            "и генерацию входящего потока заявок через образовательный контент и кейсы."
+            "Контент-стратегия по фазам: сначала быстрый набор аудитории через пользу и охват, "
+            "затем прогрев и дозированный вывод на продажи."
         ),
         "positioning": (
             "Практичный эксперт, который не продаёт воздух — даёт конкретные инструменты "
             "и реальные результаты клиентов."
         ),
+        "phases": [
+            {
+                "n": 1,
+                "weeks": 2,
+                "name": "Запуск: набор аудитории",
+                "objective": "быстро набрать первичную аудиторию",
+                "goal_share": {"attract": 70, "retain": 25, "sell": 5},
+                "mix": {
+                    "telegram": {"post": 4, "video": 2},
+                    "vk": {"post": 3, "video": 2},
+                    "instagram": {"post": 3, "story": 5, "reel": 3},
+                    "youtube": {"short": 3},
+                    "dzen": {"post": 2},
+                },
+                "notes": "без продаж, агрессивная подача, высокая частота",
+            },
+            {
+                "n": 2,
+                "weeks": 3,
+                "name": "Прогрев и продажи",
+                "objective": "удерживать интерес и дозированно продавать",
+                "goal_share": {"attract": 40, "retain": 40, "sell": 20},
+                "mix": {
+                    "telegram": {"post": 3, "video": 2},
+                    "vk": {"post": 2, "video": 2},
+                    "instagram": {"post": 2, "story": 4, "reel": 3},
+                    "youtube": {"short": 2},
+                    "dzen": {"post": 1},
+                },
+                "notes": "появляется продающий контент, тон спокойнее",
+            },
+        ],
         "platforms": {
             "telegram": {
                 "goals": "Удержание аудитории, виральность через репосты, лиды в директ",
-                "rubrics": ["Кейс клиента", "Инструмент недели", "Закулисье", "Быстрый лайфхак"],
-                "content_mix": {"post": 4, "video": 2},
+                "rubrics": [
+                    {"name": "Кейс клиента", "goal": "sell", "description": "реальная история результата"},
+                    {"name": "Инструмент недели", "goal": "attract", "description": "разбор полезного сервиса"},
+                    {"name": "Закулисье", "goal": "retain", "description": "процесс работы команды"},
+                ],
                 "best_times": ["09:00", "18:00"],
                 "kpi": "Охват ≥2000 на пост, CTR в ссылку ≥3%",
             },
             "vk": {
                 "goals": "Охват новой аудитории через алгоритм, трафик на сайт",
-                "rubrics": ["Разбор ошибок", "Полезный список", "История успеха", "Опрос"],
-                "content_mix": {"post": 3, "video": 2},
+                "rubrics": [
+                    {"name": "Разбор ошибок", "goal": "attract", "description": "типичные провалы и как их избежать"},
+                    {"name": "История успеха", "goal": "sell", "description": "путь клиента к результату"},
+                ],
                 "best_times": ["10:00", "19:00"],
                 "kpi": "Охват ≥1500, лайки+репосты ≥5% от охвата",
             },
             "instagram": {
                 "goals": "Визуальный имидж бренда, рост подписной базы, прямые продажи",
-                "rubrics": ["Карточки-советы", "Reels-обзор", "Stories-опрос", "Закулисье"],
-                "content_mix": {"post": 3, "story": 5, "reel": 3},
+                "rubrics": [
+                    {"name": "Карточки-советы", "goal": "attract", "description": "полезные карусели"},
+                    {"name": "Stories-опрос", "goal": "retain", "description": "вовлечение через вопросы"},
+                ],
                 "best_times": ["11:00", "20:00"],
                 "kpi": "Охват ≥3000, сохранения постов ≥8%",
             },
             "youtube": {
                 "goals": "Демонстрация экспертизы, SEO-трафик, подписки",
-                "rubrics": ["Мини-урок", "Обзор инструмента", "Разбор кейса"],
-                "content_mix": {"short": 3},
+                "rubrics": [
+                    {"name": "Мини-урок", "goal": "attract", "description": "короткий обучающий ролик"},
+                    {"name": "Разбор кейса", "goal": "sell", "description": "результат клиента в формате Shorts"},
+                ],
                 "best_times": ["12:00", "17:00"],
                 "kpi": "Просмотры ≥500, удержание ≥50%",
             },
             "dzen": {
                 "goals": "SEO-трафик, читатели из поиска Яндекса, монетизация",
-                "rubrics": ["Подробная статья", "Топ-список", "Обзор тренда"],
-                "content_mix": {"post": 2},
+                "rubrics": [
+                    {"name": "Подробная статья", "goal": "attract", "description": "глубокий разбор темы"},
+                    {"name": "Обзор тренда", "goal": "retain", "description": "анализ актуального явления"},
+                ],
                 "best_times": ["09:00", "15:00"],
                 "kpi": "Дочитывания ≥60%, трафик из поиска растёт на 10%/мес",
             },
@@ -459,39 +514,81 @@ _FAKE_STRATEGY_REVISE = json.dumps(
         "positioning": (
             "Эксперт, который объясняет сложное просто — через видео и живые примеры."
         ),
+        "phases": [
+            {
+                "n": 1,
+                "weeks": 2,
+                "name": "Прогрев на видео",
+                "objective": "удерживать интерес через видеоформаты",
+                "goal_share": {"attract": 50, "retain": 40, "sell": 10},
+                "mix": {
+                    "telegram": {"post": 3, "video": 3},
+                    "vk": {"post": 2, "video": 3},
+                    "instagram": {"post": 2, "story": 5, "reel": 4},
+                    "youtube": {"short": 3},
+                    "dzen": {"post": 2},
+                },
+                "notes": "акцент на видео, тон легче",
+            },
+            {
+                "n": 2,
+                "weeks": 3,
+                "name": "Видео-продажи",
+                "objective": "конвертировать прогретую аудиторию",
+                "goal_share": {"attract": 35, "retain": 35, "sell": 30},
+                "mix": {
+                    "telegram": {"post": 2, "video": 3},
+                    "vk": {"post": 2, "video": 3},
+                    "instagram": {"post": 2, "story": 4, "reel": 4},
+                    "youtube": {"short": 2},
+                    "dzen": {"post": 1},
+                },
+                "notes": "продающий контент через живые видео-кейсы",
+            },
+        ],
         "platforms": {
             "telegram": {
                 "goals": "Виральность через видео-контент, рост подписчиков",
-                "rubrics": ["Видео-совет", "Кейс в видео", "Текстовый разбор", "Опрос"],
-                "content_mix": {"post": 3, "video": 3},
+                "rubrics": [
+                    {"name": "Видео-совет", "goal": "attract", "description": "короткий полезный ролик"},
+                    {"name": "Кейс в видео", "goal": "sell", "description": "результат клиента на видео"},
+                ],
                 "best_times": ["09:00", "19:00"],
                 "kpi": "Охват ≥2500 на пост, репосты ≥2% от охвата",
             },
             "vk": {
                 "goals": "Видео в рекомендациях VK, новая аудитория",
-                "rubrics": ["Видео-обзор", "Пост-разбор", "История клиента"],
-                "content_mix": {"post": 2, "video": 3},
+                "rubrics": [
+                    {"name": "Видео-обзор", "goal": "attract", "description": "обзор в формате видео"},
+                    {"name": "История клиента", "goal": "sell", "description": "путь клиента"},
+                ],
                 "best_times": ["10:00", "20:00"],
                 "kpi": "Охват видео ≥2000, лайки ≥4%",
             },
             "instagram": {
                 "goals": "Reels в рекомендациях, рост новых подписчиков",
-                "rubrics": ["Reels-урок", "Stories-вопрос", "Пост-карточка"],
-                "content_mix": {"post": 2, "story": 5, "reel": 4},
+                "rubrics": [
+                    {"name": "Reels-урок", "goal": "attract", "description": "обучающий Reel"},
+                    {"name": "Stories-вопрос", "goal": "retain", "description": "вовлечение в Stories"},
+                ],
                 "best_times": ["11:00", "21:00"],
                 "kpi": "Охват Reels ≥5000, новые подписчики +10%/мес",
             },
             "youtube": {
                 "goals": "Рост канала через Shorts, переводить в длинные ролики",
-                "rubrics": ["Shorts-лайфхак", "Shorts-кейс", "Shorts-факт"],
-                "content_mix": {"short": 3},
+                "rubrics": [
+                    {"name": "Shorts-лайфхак", "goal": "attract", "description": "быстрый совет"},
+                    {"name": "Shorts-кейс", "goal": "sell", "description": "результат в Shorts"},
+                ],
                 "best_times": ["12:00", "18:00"],
                 "kpi": "Просмотры ≥800, новые подписчики ≥20/мес",
             },
             "dzen": {
                 "goals": "Органический трафик через статьи, читатели журнала",
-                "rubrics": ["Экспертная статья", "Разбор тренда"],
-                "content_mix": {"post": 2},
+                "rubrics": [
+                    {"name": "Экспертная статья", "goal": "attract", "description": "глубокий разбор"},
+                    {"name": "Разбор тренда", "goal": "retain", "description": "анализ актуального"},
+                ],
                 "best_times": ["09:00", "14:00"],
                 "kpi": "Дочитывания ≥65%, подписчики журнала +5/мес",
             },
@@ -625,6 +722,29 @@ _FAKE_ITEM_POST = json.dumps(
     ensure_ascii=False,
 )
 
+_FAKE_DIRECTIVES_PARSE = json.dumps(
+    {
+        "directives": [
+            {
+                "text": "Публиковать по 7 постов в неделю в Telegram",
+                "scope": "plan",
+                "parsed": {"platform": "telegram", "content_type": "post", "per_week": 7},
+            },
+            {
+                "text": "Меньше продаж в контенте",
+                "scope": "strategy",
+                "parsed": None,
+            },
+        ]
+    },
+    ensure_ascii=False,
+)
+
+_FAKE_STRATEGY_CHECK = json.dumps(
+    {"ok": True, "violations": []},
+    ensure_ascii=False,
+)
+
 _FAKE_ITEM_STORY = json.dumps(
     {
         "title": "Факт дня: органический охват вырос на 40% с одним изменением",
@@ -701,6 +821,10 @@ def chat(
             return _FAKE_ITEM_POST
         if purpose == "item_story":
             return _FAKE_ITEM_STORY
+        if purpose == "directives_parse":
+            return _FAKE_DIRECTIVES_PARSE
+        if purpose == "strategy_check":
+            return _FAKE_STRATEGY_CHECK
         return "FAKE_LLM response"
 
     # ── Реальный вызов ─────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from app import catalog
 from app.db import get_db
 from app.templates_env import templates
+from app.services.cleanup import delete_content_cascade
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,31 @@ def _history(db, project_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+GOAL_LABELS = {
+    "attract": "привлечение",
+    "retain": "удержание",
+    "sell": "продажи",
+    "brand": "бренд",
+}
+
+
+def _render_rubrics(raw_rubrics) -> list[dict]:
+    """Нормализовать рубрики: поддержать строки (легаси) и объекты {name, goal, description}."""
+    out = []
+    for r in (raw_rubrics or []):
+        if isinstance(r, dict):
+            out.append({
+                "name": (r.get("name") or "").strip(),
+                "goal": r.get("goal") or "",
+                "goal_label": GOAL_LABELS.get(r.get("goal"), ""),
+                "description": (r.get("description") or "").strip(),
+            })
+        else:
+            # легаси-строка («Название — описание»)
+            out.append({"name": str(r), "goal": "", "goal_label": "", "description": ""})
+    return out
+
+
 def _render_platforms(strategy: dict) -> list[dict]:
     """Подготовить список платформ для шаблона (с человекочитаемыми названиями типов)."""
     platforms = strategy.get("platforms", {}) if isinstance(strategy, dict) else {}
@@ -84,7 +110,7 @@ def _render_platforms(strategy: dict) -> list[dict]:
             "platform": p,
             "name": PLATFORM_NAMES.get(p, p),
             "goals": pdata.get("goals", ""),
-            "rubrics": pdata.get("rubrics", []) or [],
+            "rubrics": _render_rubrics(pdata.get("rubrics")),
             "content_mix": mix_rows,
             "best_times": pdata.get("best_times", []) or [],
             "kpi": pdata.get("kpi", ""),
@@ -92,10 +118,63 @@ def _render_platforms(strategy: dict) -> list[dict]:
     return out
 
 
+def _type_label(platform: str, ctype: str) -> str:
+    info = catalog.type_info(platform, ctype)
+    return info["label"] if info else ctype
+
+
+def _render_phases(strategy: dict) -> list[dict]:
+    """Подготовить фазы для шаблона: подписи целей и человекочитаемый mix."""
+    phases = strategy.get("phases") if isinstance(strategy, dict) else None
+    if not isinstance(phases, list):
+        return []
+    out = []
+    for ph in phases:
+        if not isinstance(ph, dict):
+            continue
+        gs = ph.get("goal_share") or {}
+        goal_share = [
+            {"goal": k, "label": GOAL_LABELS.get(k, k), "pct": gs[k]}
+            for k in ("attract", "retain", "sell", "brand") if k in gs
+        ]
+        mix = ph.get("mix") or {}
+        mix_lines = []
+        for plat in PLATFORMS_ORDER:
+            if plat not in mix or not isinstance(mix[plat], dict):
+                continue
+            parts = [
+                f"{n} {_type_label(plat, ctype)}"
+                for ctype, n in mix[plat].items()
+            ]
+            if parts:
+                short = PLATFORM_NAMES.get(plat, plat)
+                mix_lines.append(f"{short}: {', '.join(parts)}")
+        out.append({
+            "n": ph.get("n"),
+            "name": ph.get("name", ""),
+            "weeks": ph.get("weeks"),
+            "objective": ph.get("objective", ""),
+            "goal_share": goal_share,
+            "mix_lines": mix_lines,
+            "notes": ph.get("notes", ""),
+        })
+    return out
+
+
+def _active_directives(db, project_id: int) -> list[dict]:
+    rows = db.execute(
+        "SELECT text, scope FROM directives "
+        "WHERE project_id=? AND status='active' ORDER BY id",
+        (project_id,),
+    ).fetchall()
+    return [{"text": r["text"], "scope": r["scope"]} for r in rows]
+
+
 def _build_context(request: Request, project, *, flash=None, error=None) -> dict:
     with get_db() as db:
         current = _active_strategy(db, project["id"])
         history = _history(db, project["id"])
+        directives = _active_directives(db, project["id"])
 
     strategy_obj = {}
     if current and current["strategy"]:
@@ -104,12 +183,19 @@ def _build_context(request: Request, project, *, flash=None, error=None) -> dict
         except (json.JSONDecodeError, TypeError):
             strategy_obj = {}
 
+    check_warnings = strategy_obj.get("check_warnings") if isinstance(strategy_obj, dict) else None
+    if not isinstance(check_warnings, list):
+        check_warnings = []
+
     return {
         "project": dict(project),
         "current": dict(current) if current else None,
         "status": current["status"] if current else None,
         "strategy": strategy_obj,
         "platforms": _render_platforms(strategy_obj),
+        "phases": _render_phases(strategy_obj),
+        "directives": directives,
+        "check_warnings": check_warnings,
         "changes_summary": strategy_obj.get("changes_summary"),
         "history": history,
         "flash": flash,
@@ -166,6 +252,40 @@ async def strategy_revise(request: Request, slug: str, user_comment: str = Form(
             "VALUES (?, ?, 'generating', ?)",
             (project["id"], next_version, user_comment.strip() or None),
         )
+    return RedirectResponse(f"/projects/{slug}/strategy", status_code=303)
+
+
+@router.post("/reset")
+async def strategy_reset(request: Request, slug: str):
+    """Полный сброс: удалить все стратегии, весь контент-план и контент; вернуть проект в draft."""
+    project = _get_project(slug)
+    if project is None:
+        return HTMLResponse("Проект не найден", status_code=404)
+
+    with get_db() as db:
+        # Собрать content_id из plan_items
+        content_rows = db.execute(
+            "SELECT content_id FROM plan_items WHERE project_id=? AND content_id IS NOT NULL",
+            (project["id"],),
+        ).fetchall()
+        content_ids = [r["content_id"] for r in content_rows]
+
+        # Каскадное удаление контента
+        for cid in content_ids:
+            delete_content_cascade(db, cid)
+
+        # Удалить все пункты плана
+        db.execute("DELETE FROM plan_items WHERE project_id=?", (project["id"],))
+
+        # Удалить все стратегии
+        db.execute("DELETE FROM strategies WHERE project_id=?", (project["id"],))
+
+        # Вернуть проект в черновик
+        db.execute(
+            "UPDATE projects SET stage='draft', updated_at=datetime('now') WHERE id=?",
+            (project["id"],),
+        )
+
     return RedirectResponse(f"/projects/{slug}/strategy", status_code=303)
 
 

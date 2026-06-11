@@ -527,10 +527,11 @@
             <button type="button" class="nav-project-btn"
                     onclick="toggleProjectDropdown(event)"
                     title="Переключить проект">
-                {% set _cur_proj_name = '' %}
-                {% for p in _nav_projects %}{% if p.slug == _cur_slug %}{% set _cur_proj_name = p.name %}{% endif %}{% endfor %}
-                {% if _cur_proj_name %}
-                <span style="overflow:hidden;text-overflow:ellipsis;">{{ _cur_proj_name }}</span>
+                {# namespace: обычный set внутри for не виден снаружи цикла (скоупинг Jinja2) #}
+                {% set _cur = namespace(name='') %}
+                {% for p in _nav_projects %}{% if p.slug == _cur_slug %}{% set _cur.name = p.name %}{% endif %}{% endfor %}
+                {% if _cur.name %}
+                <span style="overflow:hidden;text-overflow:ellipsis;">{{ _cur.name }}</span>
                 {% else %}
                 <span class="nav-project-none">Проект не выбран</span>
                 {% endif %}

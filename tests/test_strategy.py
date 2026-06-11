@@ -330,3 +330,331 @@ def test_web_404_unknown_slug(client):
     _setup_db()
     resp = client.get("/projects/no-such-project/strategy")
     assert resp.status_code == 404
+
+
+# ─── 6. Полный сброс стратегии ────────────────────────────────────────────────
+
+
+def _create_content_row(db, project_id, *, status="approved"):
+    cur = db.execute(
+        "INSERT INTO content (project_id, type, title, status) VALUES (?,?,?,?)",
+        (project_id, "post", "Контент", status),
+    )
+    return cur.lastrowid
+
+
+def _create_schedule_row(db, content_id, *, sched_status="planned"):
+    from datetime import date, timedelta
+    item_date = (date.today() + timedelta(days=5)).isoformat() + " 10:00:00"
+    cur = db.execute(
+        "INSERT INTO schedule (content_id, platform, planned_at, status) VALUES (?,?,?,?)",
+        (content_id, "telegram", item_date, sched_status),
+    )
+    return cur.lastrowid
+
+
+def _create_plan_item_row(db, project_id, *, status="proposed", content_id=None):
+    from datetime import date, timedelta
+    item_date = (date.today() + timedelta(days=5)).isoformat()
+    cur = db.execute(
+        """
+        INSERT INTO plan_items
+            (project_id, platform, content_type, date, time_slot, title, status, content_id)
+        VALUES (?, 'telegram', 'post', ?, '10:00', 'Пункт', ?, ?)
+        """,
+        (project_id, item_date, status, content_id),
+    )
+    return cur.lastrowid
+
+
+class TestStrategyReset:
+
+    def test_reset_deletes_strategies_plan_and_content(self, client):
+        """POST reset: стратегии, план и контент удалены; проект в draft."""
+        _setup_db()
+        with get_db() as db:
+            project_id, slug = _create_project(
+                db, platforms=("telegram",), slug=f"reset-{uuid.uuid4().hex[:6]}"
+            )
+            # Изменяем stage на running
+            db.execute("UPDATE projects SET stage='running' WHERE id=?", (project_id,))
+
+            # Стратегии: v1 archived, v2 active
+            _create_strategy_row(db, project_id, version=1, status="archived",
+                                 strategy={"summary": "v1", "platforms": {}})
+            _create_strategy_row(db, project_id, version=2, status="active",
+                                 strategy={"summary": "v2", "platforms": {}})
+
+            # plan_item без контента
+            _create_plan_item_row(db, project_id, status="proposed")
+
+            # plan_item с контентом и schedule
+            cid = _create_content_row(db, project_id)
+            _create_schedule_row(db, cid, sched_status="planned")
+            _create_plan_item_row(db, project_id, status="approved", content_id=cid)
+
+        resp = client.post(f"/projects/{slug}/strategy/reset", follow_redirects=False)
+        assert resp.status_code == 303
+
+        with get_db() as db:
+            strategies = db.execute(
+                "SELECT id FROM strategies WHERE project_id=?", (project_id,)
+            ).fetchall()
+            plan_items = db.execute(
+                "SELECT id FROM plan_items WHERE project_id=?", (project_id,)
+            ).fetchall()
+            contents = db.execute(
+                "SELECT id FROM content WHERE project_id=?", (project_id,)
+            ).fetchall()
+            schedules = db.execute(
+                "SELECT s.id FROM schedule s JOIN content c ON c.id=s.content_id WHERE c.project_id=?",
+                (project_id,),
+            ).fetchall()
+            proj = db.execute(
+                "SELECT stage FROM projects WHERE id=?", (project_id,)
+            ).fetchone()
+
+        assert len(strategies) == 0, "Стратегии должны быть удалены"
+        assert len(plan_items) == 0, "Пункты плана должны быть удалены"
+        assert len(contents) == 0, "Контент должен быть удалён"
+        assert len(schedules) == 0, "Schedule должен быть удалён"
+        assert proj["stage"] == "draft", "Проект должен вернуться в draft"
+
+    def test_reset_without_strategies_ok(self, client):
+        """POST reset без стратегий → 303, без ошибок."""
+        _setup_db()
+        with get_db() as db:
+            project_id, slug = _create_project(
+                db, platforms=("telegram",), slug=f"reset-{uuid.uuid4().hex[:6]}"
+            )
+
+        resp = client.post(f"/projects/{slug}/strategy/reset", follow_redirects=False)
+        assert resp.status_code == 303
+
+        with get_db() as db:
+            proj = db.execute(
+                "SELECT stage FROM projects WHERE id=?", (project_id,)
+            ).fetchone()
+        assert proj["stage"] == "draft"
+
+    def test_reset_unknown_slug_404(self, client):
+        """POST reset для несуществующего проекта → 404."""
+        _setup_db()
+        resp = client.post("/projects/nonexistent-xyz/strategy/reset", follow_redirects=False)
+        assert resp.status_code == 404
+
+
+# ─── 7. Стратегия v2: фазы, директивы, проверяющий цикл (этап 8.2) ────────────
+
+
+class TestStrategyV2:
+
+    def test_active_has_phases_and_activated_on(self, client):
+        """build_strategy v2: фазы, activated_on=сегодня, content_mix материализован из фазы 1."""
+        from datetime import date
+        import app.pipeline.prompts as prompts_mod
+        prompts_mod._rules_cache = None
+        _setup_db()
+        with get_db() as db:
+            project_id, _ = _create_project(db, platforms=("telegram", "vk"))
+            sid = _create_strategy_row(db, project_id)
+
+        from app.pipeline.strategy import build_strategy
+        build_strategy(sid)
+
+        with get_db() as db:
+            row = db.execute("SELECT * FROM strategies WHERE id=?", (sid,)).fetchone()
+        assert row["status"] == "active"
+        strategy = json.loads(row["strategy"])
+
+        # Фазы
+        assert isinstance(strategy.get("phases"), list) and strategy["phases"]
+        for i, ph in enumerate(strategy["phases"], 1):
+            assert ph["n"] == i
+            assert ph["weeks"] >= 1
+            assert sum(ph["goal_share"].values()) == 100
+
+        # activated_on = сегодня
+        assert strategy.get("activated_on") == date.today().isoformat()
+
+        # content_mix материализован из mix фазы 1 (только включённые типы)
+        tg_mix = strategy["platforms"]["telegram"]["content_mix"]
+        assert tg_mix == strategy["phases"][0]["mix"].get("telegram", {})
+        assert tg_mix  # непустой
+
+    def test_revise_inherits_activated_on(self, client):
+        """revise: activated_on наследуется от прошлой версии (кампания продолжается)."""
+        import app.pipeline.prompts as prompts_mod
+        prompts_mod._rules_cache = None
+        _setup_db()
+        with get_db() as db:
+            project_id, _ = _create_project(db, platforms=("telegram", "vk"))
+            _create_strategy_row(
+                db, project_id, version=1, status="active",
+                strategy={"summary": "v1", "positioning": "p",
+                          "activated_on": "2025-01-15",
+                          "phases": [{"n": 1, "weeks": 4, "name": "ф",
+                                      "goal_share": {"attract": 100},
+                                      "mix": {"telegram": {"post": 2}}}],
+                          "platforms": {"telegram": {"content_mix": {"post": 2}}}},
+            )
+            v2 = _create_strategy_row(
+                db, project_id, version=2, status="generating",
+                user_comment="Больше видео",
+            )
+
+        from app.pipeline.strategy import build_strategy
+        build_strategy(v2)
+
+        with get_db() as db:
+            row = db.execute("SELECT * FROM strategies WHERE id=?", (v2,)).fetchone()
+        strategy = json.loads(row["strategy"])
+        assert strategy["activated_on"] == "2025-01-15"
+
+    def test_user_comment_creates_directives(self, client):
+        """user_comment при revise → строки в таблице directives (FAKE directives_parse)."""
+        import app.pipeline.prompts as prompts_mod
+        prompts_mod._rules_cache = None
+        _setup_db()
+        with get_db() as db:
+            project_id, _ = _create_project(db, platforms=("telegram",))
+            _create_strategy_row(
+                db, project_id, version=1, status="active",
+                strategy={"summary": "v1", "platforms": {"telegram": {"content_mix": {"post": 2}}}},
+            )
+            v2 = _create_strategy_row(
+                db, project_id, version=2, status="generating",
+                user_comment="7 постов в неделю, меньше продаж",
+            )
+
+        from app.pipeline.strategy import build_strategy
+        build_strategy(v2)
+
+        with get_db() as db:
+            rows = db.execute(
+                "SELECT * FROM directives WHERE project_id=?", (project_id,)
+            ).fetchall()
+        assert len(rows) >= 1
+        # FAKE содержит количественную директиву с parsed
+        parsed_dirs = [r for r in rows if r["parsed"]]
+        assert parsed_dirs
+        p = json.loads(parsed_dirs[0]["parsed"])
+        assert "per_week" in p
+
+    def test_strategy_check_fail_triggers_regeneration(self, client, monkeypatch):
+        """strategy_check ok=false → регенерация ≤2; неустранение → check_warnings."""
+        import app.pipeline.prompts as prompts_mod
+        prompts_mod._rules_cache = None
+        _setup_db()
+        with get_db() as db:
+            project_id, _ = _create_project(db, platforms=("telegram",))
+            sid = _create_strategy_row(db, project_id)
+
+        import app.pipeline.strategy as strat_mod
+
+        calls = {"strategy": 0, "check": 0}
+        good_strategy = json.dumps({
+            "summary": "s", "positioning": "p",
+            "phases": [{"n": 1, "weeks": 2, "name": "ф",
+                        "goal_share": {"attract": 80, "sell": 20},
+                        "mix": {"telegram": {"post": 3}}, "notes": ""}],
+            "platforms": {"telegram": {"goals": "g",
+                          "rubrics": [{"name": "r", "goal": "attract", "description": "d"}],
+                          "best_times": ["09:00"], "kpi": "k"}},
+        }, ensure_ascii=False)
+
+        def fake_chat(messages, purpose=None, json_mode=False, **kw):
+            if purpose == "strategy_analysis":
+                return "Записка."
+            if purpose == "directives_parse":
+                return json.dumps({"directives": []}, ensure_ascii=False)
+            if purpose == "strategy":
+                calls["strategy"] += 1
+                return good_strategy
+            if purpose == "strategy_check":
+                calls["check"] += 1
+                # всегда нарушение
+                return json.dumps({"ok": False, "violations": ["нарушение X"]},
+                                  ensure_ascii=False)
+            return "FAKE"
+
+        monkeypatch.setattr(strat_mod, "chat", fake_chat)
+        strat_mod.build_strategy(sid)
+
+        with get_db() as db:
+            row = db.execute("SELECT * FROM strategies WHERE id=?", (sid,)).fetchone()
+        assert row["status"] == "active"  # активируется несмотря на нарушения
+        strategy = json.loads(row["strategy"])
+        assert strategy.get("check_warnings") == ["нарушение X"]
+        # 1 первичная + 2 регенерации = 3 вызова strategy
+        assert calls["strategy"] == 3
+        # 1 первичная проверка + 2 после регенераций = 3 проверки
+        assert calls["check"] == 3
+
+    def test_invalid_phases_synthesized(self, client, monkeypatch):
+        """LLM вернул стратегию без phases → синтезируется одна фаза, не error."""
+        import app.pipeline.prompts as prompts_mod
+        prompts_mod._rules_cache = None
+        _setup_db()
+        with get_db() as db:
+            project_id, _ = _create_project(db, platforms=("telegram",))
+            sid = _create_strategy_row(db, project_id)
+
+        import app.pipeline.strategy as strat_mod
+
+        def fake_chat(messages, purpose=None, json_mode=False, **kw):
+            if purpose == "strategy_analysis":
+                return "Записка."
+            if purpose == "directives_parse":
+                return json.dumps({"directives": []}, ensure_ascii=False)
+            if purpose == "strategy":
+                # без phases, но с content_mix в platforms (легаси-форма)
+                return json.dumps({
+                    "summary": "s", "positioning": "p",
+                    "platforms": {"telegram": {"goals": "g", "rubrics": ["r"],
+                                  "content_mix": {"post": 4},
+                                  "best_times": ["09:00"], "kpi": "k"}},
+                }, ensure_ascii=False)
+            if purpose == "strategy_check":
+                return json.dumps({"ok": True, "violations": []}, ensure_ascii=False)
+            return "FAKE"
+
+        monkeypatch.setattr(strat_mod, "chat", fake_chat)
+        strat_mod.build_strategy(sid)
+
+        with get_db() as db:
+            row = db.execute("SELECT * FROM strategies WHERE id=?", (sid,)).fetchone()
+        assert row["status"] == "active"
+        strategy = json.loads(row["strategy"])
+        phases = strategy["phases"]
+        assert len(phases) == 1
+        assert phases[0]["name"] == "Постоянный режим"
+        # mix синтезирован из content_mix
+        assert phases[0]["mix"].get("telegram") == {"post": 4}
+
+    def test_render_platforms_legacy_string_rubrics(self, client):
+        """_render_platforms со строковыми (легаси) rubrics не падает."""
+        from app.web.strategy import _render_platforms
+        strategy = {"platforms": {"telegram": {
+            "goals": "g", "rubrics": ["Рубрика А", "Рубрика Б"],
+            "content_mix": {"post": 2}, "best_times": ["09:00"], "kpi": "k"}}}
+        out = _render_platforms(strategy)
+        assert out[0]["rubrics"][0]["name"] == "Рубрика А"
+        assert out[0]["rubrics"][0]["goal"] == ""
+
+    def test_legacy_strategy_page_200(self, client):
+        """Страница стратегии с легаси-JSON (без phases, строковые rubrics) → 200."""
+        _setup_db()
+        with get_db() as db:
+            project_id, slug = _create_project(db, platforms=("telegram",))
+            _create_strategy_row(
+                db, project_id, version=1, status="active",
+                strategy={"summary": "легаси", "positioning": "p",
+                          "platforms": {"telegram": {
+                              "goals": "g", "rubrics": ["Старая рубрика"],
+                              "content_mix": {"post": 2},
+                              "best_times": ["09:00"], "kpi": "k"}}},
+            )
+        resp = client.get(f"/projects/{slug}/strategy")
+        assert resp.status_code == 200
+        assert "Старая рубрика" in resp.text

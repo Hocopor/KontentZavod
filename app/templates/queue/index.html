@@ -108,11 +108,13 @@
 }
 .q-dot:hover { opacity: .7; transform: scale(1.2); }
 
-.dot-generating { background: #38bdf8; animation: pulse-q 1.5s infinite; }
+/* Цвета синхронизированы с контрактом base.html; generated оставлен фиолетовым,
+   чтобы «готово» не путалось с «опубликовано» (оба были зелёными — жалоба приёмки) */
+.dot-generating { background: #f59e0b; animation: pulse-q 1.5s infinite; }
 .dot-error      { background: #ef4444; }
 .dot-generated  { background: #6c63ff; }
-.dot-planned    { background: #22c55e; }
-.dot-published  { background: #10b981; }
+.dot-planned    { background: #38bdf8; }
+.dot-published  { background: #22c55e; }
 .dot-manual     { background: #f97316; }
 
 @keyframes pulse-q {

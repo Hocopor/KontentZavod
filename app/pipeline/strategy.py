@@ -17,13 +17,20 @@ build_strategy(strategy_id) обрабатывает строку strategies с�
 import json
 import logging
 import re
+from datetime import date
 
 from app import catalog
 from app.db import get_db, get_project_settings
 from app.llm import chat, LLMError
-from app.pipeline.prompts import load_prompt
+from app.pipeline.prompts import load_prompt, load_rules
 
 logger = logging.getLogger(__name__)
+
+# Допустимые маркетинговые цели (для goal_share и рубрик)
+_GOAL_KEYS = ("attract", "retain", "sell", "brand")
+_DEFAULT_GOAL_SHARE = {"attract": 40, "retain": 50, "sell": 10}
+# Сколько итераций проверяющего цикла (регенераций) максимум
+_CHECK_MAX_ITER = 2
 
 # Сколько последних тем подтягивать для свежести (против повторов)
 _RECENT_LIMIT = 40
@@ -300,10 +307,86 @@ def _topics_block(top_topics: list[str], past_topics: list[str]) -> str:
     return "\n\n".join(parts) if parts else "Пока нет выпущенного контента."
 
 
+def _directives_block(db, project_id: int) -> str:
+    """Активные директивы проекта компактным блоком («• текст [scope]»)."""
+    rows = db.execute(
+        "SELECT text, scope FROM directives "
+        "WHERE project_id=? AND status='active' ORDER BY id",
+        (project_id,),
+    ).fetchall()
+    if not rows:
+        return "Нет."
+    return "\n".join(f"• {(r['text'] or '').strip()} [{r['scope']}]" for r in rows)
+
+
+# ─── Шаг 1.5: разбор директив ─────────────────────────────────────────────────
+
+
+def _parse_directives(strategy_id: int, project_id: int, inputs: dict) -> None:
+    """
+    Разобрать user_comment в структурированные директивы и сохранить активные
+    в таблицу directives. Ошибка шага НЕ валит стратегию.
+    """
+    comment = (inputs.get("user_comment") or "").strip()
+    if not comment:
+        return
+    try:
+        prompt = load_prompt(
+            "directives_parse",
+            USER_COMMENT=comment,
+            PLATFORMS_BLOCK=_platforms_block(inputs["platforms"]),
+        )
+        raw = chat([{"role": "user", "content": prompt}],
+                   purpose="directives_parse", json_mode=True)
+        try:
+            data = json.loads(_strip_fences(raw))
+        except (json.JSONDecodeError, ValueError):
+            retry = [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": (
+                    "Ответь ТОЛЬКО валидным JSON-объектом с ключом directives "
+                    "(массив), без пояснений и без markdown-фенсов."
+                )},
+            ]
+            raw2 = chat(retry, purpose="directives_parse", json_mode=True)
+            data = json.loads(_strip_fences(raw2))
+
+        directives = data.get("directives") if isinstance(data, dict) else None
+        if not isinstance(directives, list):
+            return
+
+        valid_scopes = {"strategy", "plan", "content"}
+        with get_db() as db:
+            for d in directives:
+                if not isinstance(d, dict):
+                    continue
+                text = (d.get("text") or "").strip()
+                if not text:
+                    continue
+                scope = d.get("scope")
+                if scope not in valid_scopes:
+                    scope = "plan"
+                parsed = d.get("parsed")
+                parsed_json = (
+                    json.dumps(parsed, ensure_ascii=False)
+                    if isinstance(parsed, dict) else None
+                )
+                db.execute(
+                    "INSERT INTO directives (project_id, scope, text, parsed) "
+                    "VALUES (?,?,?,?)",
+                    (project_id, scope, text, parsed_json),
+                )
+    except Exception as exc:  # noqa: BLE001 — разбор директив не должен валить стратегию
+        logger.warning(
+            "strategy_id=%d: не удалось разобрать директивы: %s", strategy_id, exc
+        )
+
+
 # ─── Шаги 1–2: LLM ────────────────────────────────────────────────────────────
 
 
-def _analysis_note(inputs: dict) -> str:
+def _analysis_note(inputs: dict, directives_block: str) -> str:
     """Шаг 1 — аналитическая записка (текст)."""
     p = inputs["profile"]
     prompt = load_prompt(
@@ -327,10 +410,14 @@ def _analysis_note(inputs: dict) -> str:
                 purpose="strategy_analysis", json_mode=False)
 
 
-def _generate_strategy(inputs: dict, note: str) -> dict:
+def _generate_strategy(inputs: dict, note: str, directives_block: str,
+                       rules: str) -> tuple[dict, list, str]:
     """
     Шаг 2 — стратегия (JSON). Выбор purpose: revise если есть прошлая
     стратегия И user_comment, иначе обычная strategy. Парсинг + 1 retry.
+
+    Возвращает (strategy, messages, purpose) — messages включают ответ модели,
+    чтобы проверяющий цикл мог добавить замечания и регенерировать.
     """
     p = inputs["profile"]
     platforms_block = _platforms_block(inputs["platforms"])
@@ -341,6 +428,8 @@ def _generate_strategy(inputs: dict, note: str) -> dict:
         purpose = "strategy_revise"
         prompt = load_prompt(
             "strategy_revise",
+            RULES=rules,
+            DIRECTIVES=directives_block,
             ANALYSIS_NOTE=note,
             PREVIOUS_STRATEGY=json.dumps(prev["strategy"], ensure_ascii=False, indent=2),
             USER_COMMENT=inputs["user_comment"],
@@ -351,6 +440,8 @@ def _generate_strategy(inputs: dict, note: str) -> dict:
         purpose = "strategy"
         prompt = load_prompt(
             "strategy",
+            RULES=rules,
+            DIRECTIVES=directives_block,
             ANALYSIS_NOTE=note,
             PROJECT_NAME=p["name"],
             PROJECT_DESCRIPTION=p["description"],
@@ -363,7 +454,9 @@ def _generate_strategy(inputs: dict, note: str) -> dict:
     messages = [{"role": "user", "content": prompt}]
     raw = chat(messages, purpose=purpose, json_mode=True)
     try:
-        return _parse_strategy_json(raw)
+        strategy = _parse_strategy_json(raw)
+        messages.append({"role": "assistant", "content": raw})
+        return strategy, messages, purpose
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("strategy: первая попытка парсинга провалилась (%s), retry", exc)
         retry_messages = messages + [
@@ -372,13 +465,47 @@ def _generate_strategy(inputs: dict, note: str) -> dict:
                 "role": "user",
                 "content": (
                     f"Ошибка парсинга JSON: {exc}. Ответь ТОЛЬКО валидным JSON-объектом "
-                    "стратегии с ключами summary, positioning, platforms, без пояснений "
+                    "стратегии с ключами summary, positioning, phases, platforms, без пояснений "
                     "и без markdown-фенсов."
                 ),
             },
         ]
         raw2 = chat(retry_messages, purpose=purpose, json_mode=True)
-        return _parse_strategy_json(raw2)
+        strategy = _parse_strategy_json(raw2)
+        retry_messages.append({"role": "assistant", "content": raw2})
+        return strategy, retry_messages, purpose
+
+
+def _regenerate_strategy(messages: list, purpose: str, violations: list[str]) -> tuple[dict, list]:
+    """
+    Регенерация стратегии в проверяющем цикле: к messages добавляется замечание
+    проверяющего, модель возвращает полный JSON заново. Парсинг + 1 retry.
+    """
+    viol_text = "; ".join(str(v) for v in violations)
+    msgs = messages + [{
+        "role": "user",
+        "content": (
+            f"Проверка нашла нарушения: {viol_text}. "
+            "Исправь и верни ПОЛНЫЙ JSON стратегии по той же схеме, "
+            "без пояснений и без markdown-фенсов."
+        ),
+    }]
+    raw = chat(msgs, purpose=purpose, json_mode=True)
+    try:
+        strategy = _parse_strategy_json(raw)
+        msgs.append({"role": "assistant", "content": raw})
+        return strategy, msgs
+    except (json.JSONDecodeError, ValueError) as exc:
+        retry = msgs + [
+            {"role": "assistant", "content": raw},
+            {"role": "user", "content": (
+                f"Ошибка парсинга JSON: {exc}. Ответь ТОЛЬКО валидным JSON-объектом стратегии."
+            )},
+        ]
+        raw2 = chat(retry, purpose=purpose, json_mode=True)
+        strategy = _parse_strategy_json(raw2)
+        retry.append({"role": "assistant", "content": raw2})
+        return strategy, retry
 
 
 # ─── Шаг 3: фильтрация ────────────────────────────────────────────────────────
@@ -421,6 +548,168 @@ def _filter_strategy(strategy: dict, platforms: dict[str, dict[str, bool]]) -> d
     result = dict(strategy)
     result["platforms"] = filtered
     return result
+
+
+# ─── Валидация фаз (код) ──────────────────────────────────────────────────────
+
+
+def _normalize_goal_share(raw) -> dict:
+    """Оставить только валидные цели с числами ≥0, нормализовать к сумме 100."""
+    if not isinstance(raw, dict):
+        return dict(_DEFAULT_GOAL_SHARE)
+    clean: dict[str, float] = {}
+    for k, v in raw.items():
+        if k in _GOAL_KEYS:
+            try:
+                num = float(v)
+            except (TypeError, ValueError):
+                continue
+            if num >= 0:
+                clean[k] = num
+    total = sum(clean.values())
+    if not clean or total <= 0:
+        return dict(_DEFAULT_GOAL_SHARE)
+    # нормализация к 100 (целые, остаток — крупнейшей доле)
+    scaled = {k: v * 100 / total for k, v in clean.items()}
+    rounded = {k: int(round(v)) for k, v in scaled.items()}
+    diff = 100 - sum(rounded.values())
+    if diff != 0 and rounded:
+        top = max(rounded, key=lambda k: scaled[k])
+        rounded[top] += diff
+    return rounded
+
+
+def _filter_phase_mix(raw_mix, enabled_types_map: dict) -> dict:
+    """Отфильтровать mix фазы: только включённые площадки/типы, int≥0."""
+    out: dict = {}
+    if not isinstance(raw_mix, dict):
+        return out
+    for platform, types in raw_mix.items():
+        if platform not in enabled_types_map or not isinstance(types, dict):
+            continue
+        allowed = enabled_types_map[platform]
+        clean: dict[str, int] = {}
+        for ctype, n in types.items():
+            if ctype not in allowed or not catalog.is_valid(platform, ctype):
+                continue
+            try:
+                num = int(n)
+            except (TypeError, ValueError):
+                continue
+            if num >= 0:
+                clean[ctype] = num
+        if clean:
+            out[platform] = clean
+    return out
+
+
+def _validate_phases(strategy: dict, platforms: dict[str, dict[str, bool]]) -> dict:
+    """
+    Валидация/нормализация фаз. phases — непустой список; если отсутствует/пуст —
+    синтезируется одна бессрочная фаза. n проставляется по порядку.
+    """
+    enabled_types_map = {
+        p: {t for t, on in types.items() if on}
+        for p, types in platforms.items()
+    }
+
+    raw_phases = strategy.get("phases")
+    valid_phases: list[dict] = []
+    if isinstance(raw_phases, list):
+        for ph in raw_phases:
+            if not isinstance(ph, dict):
+                continue
+            try:
+                weeks = int(ph.get("weeks", 1))
+            except (TypeError, ValueError):
+                weeks = 1
+            if weeks < 1:
+                weeks = 1
+            valid_phases.append({
+                "n": len(valid_phases) + 1,
+                "weeks": weeks,
+                "name": (ph.get("name") or "").strip() or f"Фаза {len(valid_phases) + 1}",
+                "objective": (ph.get("objective") or "").strip(),
+                "goal_share": _normalize_goal_share(ph.get("goal_share")),
+                "mix": _filter_phase_mix(ph.get("mix"), enabled_types_map),
+                "notes": (ph.get("notes") or "").strip(),
+            })
+
+    if not valid_phases:
+        # синтез одной бессрочной фазы; mix — из platforms.<p>.content_mix, если LLM его вернул
+        synth_mix: dict = {}
+        for p, pdata in (strategy.get("platforms") or {}).items():
+            if p not in enabled_types_map or not isinstance(pdata, dict):
+                continue
+            cm = pdata.get("content_mix")
+            clean = _filter_phase_mix({p: cm}, enabled_types_map)
+            if p in clean:
+                synth_mix[p] = clean[p]
+        valid_phases = [{
+            "n": 1,
+            "weeks": 4,
+            "name": "Постоянный режим",
+            "objective": "",
+            "goal_share": dict(_DEFAULT_GOAL_SHARE),
+            "mix": synth_mix,
+            "notes": "",
+        }]
+
+    result = dict(strategy)
+    result["phases"] = valid_phases
+    return result
+
+
+def _materialize_content_mix(strategy: dict, platforms: dict[str, dict[str, bool]]) -> None:
+    """
+    КОМПАТ: материализовать platforms.<p>.content_mix из mix ПЕРВОЙ фазы
+    (для старого планнера/UI). Платформа без mix в фазе → content_mix {}.
+    """
+    phases = strategy.get("phases") or []
+    first_mix = phases[0].get("mix", {}) if phases else {}
+    for p, pdata in (strategy.get("platforms") or {}).items():
+        if not isinstance(pdata, dict):
+            continue
+        if p not in platforms:
+            continue
+        pdata["content_mix"] = dict(first_mix.get(p, {}))
+
+
+# ─── Проверяющий цикл ─────────────────────────────────────────────────────────
+
+
+def _parse_check_result(raw: str) -> tuple[bool, list[str]]:
+    """
+    Устойчивый парсинг ответа проверяющего. Возвращает (ok, violations).
+    Не ок только при ЯВНОМ ok=false с непустыми violations.
+    """
+    try:
+        data = json.loads(_strip_fences(raw))
+    except (json.JSONDecodeError, ValueError):
+        return True, []
+    if not isinstance(data, dict):
+        return True, []
+    ok = data.get("ok")
+    violations = data.get("violations")
+    if not isinstance(violations, list):
+        violations = []
+    violations = [str(v).strip() for v in violations if str(v).strip()]
+    if ok is False and violations:
+        return False, violations
+    return True, []
+
+
+def _check_strategy(strategy: dict, directives_block: str, rules: str) -> tuple[bool, list[str]]:
+    """Один прогон проверяющего (purpose='strategy_check'). Ошибка → пропуск (True, [])."""
+    prompt = load_prompt(
+        "strategy_check",
+        RULES=rules,
+        DIRECTIVES=directives_block,
+        STRATEGY_JSON=json.dumps(strategy, ensure_ascii=False, indent=2),
+    )
+    raw = chat([{"role": "user", "content": prompt}],
+               purpose="strategy_check", json_mode=True)
+    return _parse_check_result(raw)
 
 
 # ─── Основная функция ─────────────────────────────────────────────────────────
@@ -479,28 +768,83 @@ def build_strategy(strategy_id: int) -> None:
             _set_error(strategy_id, "У проекта нет ни одной включённой площадки")
             return
 
+        project_id = project["id"]
+
+        # Шаг 1.5 — разбор директив из user_comment (до генерации; ошибка не валит)
+        _parse_directives(strategy_id, project_id, inputs)
+
+        # Блоки для промптов мозга
+        with get_db() as db:
+            directives_block = _directives_block(db, project_id)
+        rules = load_rules(inputs.get("settings"))
+
         # Шаг 1 — аналитическая записка
-        note = _analysis_note(inputs)
+        note = _analysis_note(inputs, directives_block)
 
-        # Шаг 2 — стратегия (+ retry внутри)
-        strategy = _generate_strategy(inputs, note)
+        # Шаг 2 — стратегия (+ retry внутри). messages/purpose нужны для проверяющего цикла.
+        strategy, messages, purpose = _generate_strategy(
+            inputs, note, directives_block, rules
+        )
 
-        # Шаг 3 — фильтрация; при пустом результате — ещё один полный retry шага 2
+        def _filter_and_validate(strat: dict) -> dict:
+            strat = _filter_strategy(strat, inputs["platforms"])
+            strat = _validate_phases(strat, inputs["platforms"])
+            return strat
+
+        # Шаг 3 — фильтрация + валидация фаз; при пустом platforms — полный retry шага 2
         try:
-            strategy = _filter_strategy(strategy, inputs["platforms"])
+            strategy = _filter_and_validate(strategy)
         except ValueError:
             logger.warning(
                 "strategy_id=%d: пустой platforms после фильтрации — retry генерации",
                 strategy_id,
             )
-            strategy = _generate_strategy(inputs, note)
-            strategy = _filter_strategy(strategy, inputs["platforms"])
+            strategy, messages, purpose = _generate_strategy(
+                inputs, note, directives_block, rules
+            )
+            strategy = _filter_and_validate(strategy)
+
+        # Шаг 4 — наследование activated_on (кампания продолжается при revise)
+        prev = inputs.get("previous_strategy")
+        prev_activated = (
+            (prev or {}).get("strategy", {}).get("activated_on")
+            if isinstance(prev, dict) else None
+        )
+        strategy["activated_on"] = prev_activated or date.today().isoformat()
+
+        # Шаг 5 — материализация content_mix (компат) из фазы 1
+        _materialize_content_mix(strategy, inputs["platforms"])
+
+        # Шаг 6 — проверяющий цикл (до 2 регенераций)
+        try:
+            ok, violations = _check_strategy(strategy, directives_block, rules)
+            iteration = 0
+            while not ok and iteration < _CHECK_MAX_ITER:
+                iteration += 1
+                logger.info(
+                    "strategy_id=%d: проверка нашла нарушения (итерация %d): %s",
+                    strategy_id, iteration, violations,
+                )
+                strategy, messages = _regenerate_strategy(messages, purpose, violations)
+                strategy = _filter_and_validate(strategy)
+                strategy["activated_on"] = prev_activated or date.today().isoformat()
+                _materialize_content_mix(strategy, inputs["platforms"])
+                ok, violations = _check_strategy(strategy, directives_block, rules)
+            if not ok and violations:
+                strategy["check_warnings"] = violations
+        except LLMError as exc:
+            logger.warning(
+                "strategy_id=%d: проверяющий цикл пропущен (LLMError: %s)", strategy_id, exc
+            )
+        except Exception as exc:  # noqa: BLE001 — ошибка чека не должна валить стратегию
+            logger.warning(
+                "strategy_id=%d: проверяющий цикл пропущен (%s)", strategy_id, exc
+            )
 
         # Записку приложим к стратегии для прозрачности
         strategy.setdefault("analysis_note", note)
 
-        # Шаг 4 — сохранение + архивация остальных active
-        project_id = project["id"]
+        # Шаг 7 — сохранение + архивация остальных active
         with get_db() as db:
             db.execute(
                 "UPDATE strategies SET status='archived' "

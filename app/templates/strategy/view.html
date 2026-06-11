@@ -18,6 +18,20 @@
 }
 .hist-table { width: 100%; border-collapse: collapse; }
 .hist-table td, .hist-table th { border-bottom: 1px solid var(--border); padding: .4rem .6rem; font-size: .85rem; text-align: left; }
+.phase-table { width: 100%; border-collapse: collapse; }
+.phase-table td, .phase-table th { border: 1px solid var(--border); padding: .45rem .6rem; font-size: .85rem; text-align: left; vertical-align: top; }
+.phase-table th { background: var(--bg3); color: var(--text2); font-weight: 600; }
+.goal-badge {
+    display: inline-block; padding: .1rem .5rem; border-radius: 999px;
+    font-size: .72rem; background: rgba(108,99,255,.15); color: var(--accent2);
+    border: 1px solid var(--border); margin-left: .4rem;
+}
+.directive-item { margin-bottom: .35rem; }
+.directive-scope {
+    display: inline-block; padding: .1rem .45rem; border-radius: 999px;
+    font-size: .72rem; background: var(--bg3); color: var(--text2);
+    border: 1px solid var(--border); margin-left: .4rem;
+}
 </style>
 {% endblock %}
 
@@ -43,6 +57,15 @@
 {% if flash %}<div class="alert alert-success">{{ flash }}</div>{% endif %}
 {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
 
+{% if check_warnings %}
+<div class="alert alert-warning">
+    <strong>⚠ Проверка отметила:</strong>
+    <ul style="margin:.4rem 0 0;padding-left:1.2rem;">
+        {% for w in check_warnings %}<li>{{ w }}</li>{% endfor %}
+    </ul>
+</div>
+{% endif %}
+
 {# Статус-блок (generating/error). При generating — автообновление через HTMX. #}
 {% if status in ('generating', 'error') %}
     {% include "strategy/_status.html" %}
@@ -50,7 +73,8 @@
 
 {% if not current %}
 <div class="card">
-    <p class="text-muted">Стратегия ещё не создавалась. Запустите проект «В работу», чтобы её сгенерировать.</p>
+    <p class="text-muted">Стратегии ещё нет — запустите проект с панели запуска.</p>
+    <a href="/projects/{{ project.slug }}" class="btn btn-primary btn-sm" style="margin-top:.75rem;">Панель запуска</a>
 </div>
 {% endif %}
 
@@ -74,6 +98,45 @@
     {% endif %}
 </div>
 
+{% if phases %}
+<div class="card mb-2">
+    <h2 style="margin-bottom:.5rem;">Фазы кампании</h2>
+    <table class="phase-table">
+        <tr>
+            <th>№</th><th>Фаза</th><th>Недель</th><th>Цель фазы</th>
+            <th>Распределение целей</th><th>Объём в неделю</th><th>Примечания</th>
+        </tr>
+        {% for ph in phases %}
+        <tr>
+            <td>{{ ph.n }}</td>
+            <td><strong>{{ ph.name }}</strong></td>
+            <td>{{ ph.weeks }}</td>
+            <td>{{ ph.objective }}</td>
+            <td>
+                {% for g in ph.goal_share %}{{ g.label }}: {{ g.pct }}%{% if not loop.last %}<br>{% endif %}{% endfor %}
+            </td>
+            <td>
+                {% for line in ph.mix_lines %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+            </td>
+            <td>{{ ph.notes }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <p class="text-sm text-muted mt-1">После последней фазы её режим действует постоянно.</p>
+</div>
+{% endif %}
+
+{% if directives %}
+<div class="card mb-2">
+    <h2 style="margin-bottom:.5rem;">📌 Директивы</h2>
+    <ul style="margin:0;padding-left:1.2rem;">
+        {% for d in directives %}
+        <li class="directive-item">{{ d.text }}<span class="directive-scope">{{ d.scope }}</span></li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
 {% for p in platforms %}
 <div class="card strat-platform">
     <h2 style="margin-bottom:.5rem;">{{ p.name }}</h2>
@@ -82,7 +145,12 @@
     {% if p.rubrics %}
     <h4 style="margin:.6rem 0 .3rem;">Рубрики</h4>
     <ul style="margin:0;padding-left:1.2rem;">
-        {% for r in p.rubrics %}<li class="rubric-item">{{ r }}</li>{% endfor %}
+        {% for r in p.rubrics %}
+        <li class="rubric-item">
+            <strong>{{ r.name }}</strong>{% if r.description %} — {{ r.description }}{% endif %}
+            {% if r.goal_label %}<span class="goal-badge">{{ r.goal_label }}</span>{% endif %}
+        </li>
+        {% endfor %}
     </ul>
     {% endif %}
 
@@ -133,8 +201,9 @@
                 <input type="text" name="goals_{{ p.platform }}" value="{{ p.goals }}">
             </div>
             <div class="form-group">
-                <label>Рубрики (по одной на строку)</label>
-                <textarea name="rubrics_{{ p.platform }}" rows="4">{{ p.rubrics | join('\n') }}</textarea>
+                <label>Рубрики (по одной на строку: «Название — описание»)</label>
+                <textarea name="rubrics_{{ p.platform }}" rows="4">{% for r in p.rubrics %}{{ r.name }}{% if r.description %} — {{ r.description }}{% endif %}
+{% endfor %}</textarea>
             </div>
             <div class="form-group">
                 <label>Контент-микс (штук в неделю)</label>
@@ -195,5 +264,13 @@
         {% endfor %}
     </table>
 </div>
+{% endif %}
+
+{# ── Полный сброс (только если есть стратегия) ── #}
+{% if current %}
+<form method="post" action="/projects/{{ project.slug }}/strategy/reset" class="mt-3"
+      onsubmit="return confirm('Полный сброс: удалятся ВСЕ версии стратегии, ВЕСЬ контент-план и весь сгенерированный контент проекта (файлы и расписание). Проект вернётся в черновик — запустить заново можно с панели запуска. Это необратимо. Продолжить?');">
+    <button type="submit" class="btn btn-danger btn-sm">🗑 Полный сброс стратегии</button>
+</form>
 {% endif %}
 {% endblock %}

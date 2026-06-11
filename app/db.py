@@ -213,10 +213,23 @@ CREATE INDEX IF NOT EXISTS idx_schedule_planned     ON schedule(planned_at, stat
 CREATE INDEX IF NOT EXISTS idx_learnings_project    ON learnings(project_id, active);
 -- Один замер метрик на публикацию в день (collector делает INSERT OR REPLACE)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_schedule_date ON metrics(schedule_id, date);
+-- Директивы маркетингового мозга (этап 8.2)
+CREATE TABLE IF NOT EXISTS directives (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    scope       TEXT NOT NULL DEFAULT 'plan' CHECK (scope IN ('strategy','plan','content')),
+    text        TEXT NOT NULL,
+    parsed      TEXT,                -- JSON: {"platform": "...", "content_type": "...", "per_week": N} или NULL
+    status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','done','dismissed')),
+    created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 -- Индексы новых таблиц этапа 7
 CREATE INDEX IF NOT EXISTS idx_strategies_project   ON strategies(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_plan_items_project_date ON plan_items(project_id, date);
 CREATE INDEX IF NOT EXISTS idx_plan_items_status    ON plan_items(status, date);
+-- Индексы таблицы директив (этап 8.2)
+CREATE INDEX IF NOT EXISTS idx_directives_project   ON directives(project_id, status);
 """
 
 # ─── Миграции существующих таблиц ────────────────────────────────────────────
@@ -276,6 +289,29 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 last_ok_at    TEXT,
                 last_error    TEXT,
                 created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # 6. plan_items.goal (этап 8.2 — маркетинговая цель ячейки плана)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(plan_items)").fetchall()]
+    if "goal" not in cols:
+        conn.execute("ALTER TABLE plan_items ADD COLUMN goal TEXT")
+        conn.commit()
+
+    # 7. Таблица directives (этап 8.2 — директивы маркетингового мозга)
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS directives (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                scope       TEXT NOT NULL DEFAULT 'plan' CHECK (scope IN ('strategy','plan','content')),
+                text        TEXT NOT NULL,
+                parsed      TEXT,
+                status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','done','dismissed')),
+                created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             )
         """)
         conn.commit()

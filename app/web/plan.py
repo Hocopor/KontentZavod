@@ -653,10 +653,27 @@ async def refresh_plan_content_type(
     return _render_refresh_response(request, slug, result)
 
 
-def _render_refresh_response(request: Request, slug: str, result: dict) -> HTMLResponse:
-    """Рендер HTMX-ответа после перегенерации: флеш + обновлённая шахматка."""
+def _render_board_with_flash(request: Request, slug: str, flash_html: str) -> HTMLResponse:
+    """Рендер шахматки с готовой HTML-строкой флеша."""
     today = date.today()
 
+    with get_db() as db:
+        proj = _get_project_by_slug(db, slug)
+        if proj is None:
+            return HTMLResponse(flash_html, status_code=200)
+
+        ctx = _build_board_context(db, dict(proj), today.year, today.month)
+        ctx["all_projects"] = _get_projects_list(db)
+        ctx["running_count"] = _get_running_projects_count(db)
+        ctx["cookie_project"] = request.cookies.get("current_project", "") or None
+        ctx["flash_html"] = flash_html
+
+    from app.templates_env import templates as _tpl
+    return _tpl.TemplateResponse(request, "plan/board.html", ctx)
+
+
+def _render_refresh_response(request: Request, slug: str, result: dict) -> HTMLResponse:
+    """Рендер HTMX-ответа после перегенерации: флеш + обновлённая шахматка."""
     if result.get("error"):
         flash_html = (
             f'<div id="refresh-flash" class="alert alert-danger" style="margin-bottom:1rem;">'
@@ -670,19 +687,77 @@ def _render_refresh_response(request: Request, slug: str, result: dict) -> HTMLR
             f'✅ Обновлено: удалено {deleted} предложенных, добавлено {created}</div>'
         )
 
+    return _render_board_with_flash(request, slug, flash_html)
+
+
+@router.post("/clear/{slug}/{mode}", response_class=HTMLResponse)
+async def clear_plan(request: Request, slug: str, mode: str):
+    """
+    Очистка контент-плана проекта.
+    mode: all | unpublished | unapproved
+    """
+    if mode not in ("all", "unpublished", "unapproved"):
+        return HTMLResponse("Неизвестный режим очистки", status_code=422)
+
     with get_db() as db:
         proj = _get_project_by_slug(db, slug)
         if proj is None:
-            return HTMLResponse(flash_html, status_code=200)
+            return HTMLResponse("Проект не найден", status_code=404)
 
-        ctx = _build_board_context(db, dict(proj), today.year, today.month)
-        ctx["all_projects"] = _get_projects_list(db)
-        ctx["running_count"] = _get_running_projects_count(db)
-        ctx["cookie_project"] = request.cookies.get("current_project", "") or None
-        ctx["refresh_flash"] = result
+        project_id = proj["id"]
 
-    from app.templates_env import templates as _tpl
-    return _tpl.TemplateResponse(request, "plan/board.html", ctx)
+        if mode == "all":
+            rows = db.execute(
+                "SELECT id, content_id FROM plan_items WHERE project_id=?",
+                (project_id,),
+            ).fetchall()
+        elif mode == "unpublished":
+            rows = db.execute(
+                """
+                SELECT pi.id, pi.content_id FROM plan_items pi
+                WHERE pi.project_id=?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM schedule s
+                      WHERE s.content_id = pi.content_id
+                        AND s.status IN ('published','manual_done'))
+                """,
+                (project_id,),
+            ).fetchall()
+        else:  # unapproved
+            rows = db.execute(
+                """
+                SELECT id, content_id FROM plan_items
+                WHERE project_id=? AND status IN ('proposed','rejected','error')
+                """,
+                (project_id,),
+            ).fetchall()
+
+        items = [dict(r) for r in rows]
+
+        # Каскадное удаление контента
+        for item in items:
+            if item["content_id"] is not None:
+                delete_content_cascade(db, item["content_id"])
+
+        # Удалить сами пункты плана
+        if items:
+            ids = [item["id"] for item in items]
+            placeholders = ",".join("?" * len(ids))
+            db.execute(f"DELETE FROM plan_items WHERE id IN ({placeholders})", ids)
+
+    n = len(items)
+    if n == 0:
+        flash_html = (
+            '<div id="refresh-flash" class="alert alert-info" style="margin-bottom:1rem;">'
+            'Нечего удалять</div>'
+        )
+    else:
+        flash_html = (
+            f'<div id="refresh-flash" class="alert alert-success" style="margin-bottom:1rem;">'
+            f'🧹 Удалено пунктов плана: {n}</div>'
+        )
+
+    return _render_board_with_flash(request, slug, flash_html)
 
 
 @router.post("/autogen/{slug}", response_class=HTMLResponse)
