@@ -4,8 +4,9 @@
 FAKE_LLM=1 — без реальных LLM-вызовов.
 
 Покрывает:
-- proposed удаляются и заменяются новыми
-- approved/generated/error остаются нетронутыми
+- proposed/rejected/error удаляются и заменяются новыми предложенными
+- approved/generating/generated остаются нетронутыми
+- error-пункт с content_id → контент, schedule и файлы удалены каскадом
 - фильтр по платформе не трогает другие платформы
 - фильтр по типу не трогает другие типы
 - без активной стратегии — ошибка (не исключение)
@@ -180,8 +181,8 @@ class TestRefreshPlanUnit:
         assert row is not None
         assert row["status"] == "generated"
 
-    def test_error_status_not_touched(self, patch_env):
-        """error-пункты остаются нетронутыми."""
+    def test_error_status_deleted(self, patch_env):
+        """error-пункты без content_id удаляются при refresh."""
         _setup_db()
         with get_db() as db:
             pid, slug = _create_project(db, platforms=("telegram",))
@@ -195,10 +196,86 @@ class TestRefreshPlanUnit:
         from app.pipeline.planner import refresh_plan
         result = refresh_plan(pid)
 
+        assert result["error"] is None
         with get_db() as db:
-            row = db.execute("SELECT id, status FROM plan_items WHERE id=?", (err_id,)).fetchone()
+            row = db.execute("SELECT id FROM plan_items WHERE id=?", (err_id,)).fetchone()
+        assert row is None  # удалён
+
+    def test_rejected_status_deleted(self, patch_env):
+        """rejected-пункты удаляются при refresh."""
+        _setup_db()
+        with get_db() as db:
+            pid, slug = _create_project(db, platforms=("telegram",))
+            _create_active_strategy(db, pid, platforms=("telegram",))
+            item_date = (date.today() + timedelta(days=5)).isoformat()
+            rej_id = _create_plan_item(
+                db, pid, platform="telegram", item_date=item_date,
+                title="Отклонённый пункт", status="rejected"
+            )
+
+        from app.pipeline.planner import refresh_plan
+        result = refresh_plan(pid)
+
+        assert result["error"] is None
+        with get_db() as db:
+            row = db.execute("SELECT id FROM plan_items WHERE id=?", (rej_id,)).fetchone()
+        assert row is None  # удалён
+
+    def test_generating_not_touched(self, patch_env):
+        """generating-пункты остаются нетронутыми."""
+        _setup_db()
+        with get_db() as db:
+            pid, slug = _create_project(db, platforms=("telegram",))
+            _create_active_strategy(db, pid, platforms=("telegram",))
+            item_date = (date.today() + timedelta(days=5)).isoformat()
+            gen_id = _create_plan_item(
+                db, pid, platform="telegram", item_date=item_date,
+                title="Генерируется", status="generating"
+            )
+
+        from app.pipeline.planner import refresh_plan
+        result = refresh_plan(pid)
+
+        with get_db() as db:
+            row = db.execute("SELECT id, status FROM plan_items WHERE id=?", (gen_id,)).fetchone()
         assert row is not None
-        assert row["status"] == "error"
+        assert row["status"] == "generating"
+
+    def test_error_with_content_cascade_deleted(self, patch_env):
+        """error-пункт с content_id → контент, schedule и файлы удалены каскадом."""
+        _setup_db()
+        with get_db() as db:
+            pid, slug = _create_project(db, platforms=("telegram",))
+            _create_active_strategy(db, pid, platforms=("telegram",))
+            item_date = (date.today() + timedelta(days=5)).isoformat()
+            # Создаём контент и schedule
+            cur = db.execute(
+                "INSERT INTO content (project_id, type, title, status) VALUES (?,?,?,?)",
+                (pid, "post", "Ошибочный черновик", "approved"),
+            )
+            cid = cur.lastrowid
+            db.execute(
+                "INSERT INTO schedule (content_id, platform, planned_at, status) VALUES (?,?,?,?)",
+                (cid, "telegram", item_date + " 10:00:00", "planned"),
+            )
+            err_id = _create_plan_item(
+                db, pid, platform="telegram", item_date=item_date,
+                title="Ошибочный с контентом", status="error",
+            )
+            # Привязываем content_id к plan_item
+            db.execute("UPDATE plan_items SET content_id=? WHERE id=?", (cid, err_id))
+
+        from app.pipeline.planner import refresh_plan
+        result = refresh_plan(pid)
+
+        assert result["error"] is None
+        with get_db() as db:
+            # plan_item удалён
+            assert db.execute("SELECT id FROM plan_items WHERE id=?", (err_id,)).fetchone() is None
+            # content удалён
+            assert db.execute("SELECT id FROM content WHERE id=?", (cid,)).fetchone() is None
+            # schedule удалён
+            assert db.execute("SELECT id FROM schedule WHERE content_id=?", (cid,)).fetchone() is None
 
     def test_filter_platform_not_touching_other_platform(self, patch_env):
         """Фильтр по платформе не трогает proposed другой платформы."""

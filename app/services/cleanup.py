@@ -1,9 +1,10 @@
 """
 Очистка медиафайлов после публикации и ротация диска.
 
-delete_content_files()  — удалить медиафайлы одной единицы контента
-cleanup_after_render()  — удалить ассеты (исходники) после рендера видео
-rotate_media()          — ротация по политике хранения MEDIA_RETENTION_DAYS
+delete_content_files()    — удалить медиафайлы одной единицы контента
+delete_content_cascade()  — удалить schedule + content + файлы по content_id
+cleanup_after_render()    — удалить ассеты (исходники) после рендера видео
+rotate_media()            — ротация по политике хранения MEDIA_RETENTION_DAYS
 """
 import json
 import logging
@@ -42,6 +43,30 @@ def delete_content_files(content_id: int) -> None:
     if img.exists():
         img.unlink(missing_ok=True)
         logger.debug("cleanup: удалён images/%s.jpg", content_id)
+
+
+# ─── Каскадное удаление одной единицы контента ───────────────────────────────
+
+
+def delete_content_cascade(db, content_id: int) -> None:
+    """
+    Каскадно удалить одну единицу контента внутри открытой транзакции.
+
+    Порядок:
+      1. DELETE FROM schedule WHERE content_id=?
+      2. DELETE FROM content WHERE id=?
+      3. delete_content_files(content_id)  — файлы удаляются здесь же,
+         т.к. в существующих паттернах файлы чистят в рамках той же
+         операции (см. queue.py::queue_item_regen).
+
+    Параметры:
+        db         — открытое соединение (контекст get_db или переданное).
+        content_id — ID удаляемого контента.
+    """
+    db.execute("DELETE FROM schedule WHERE content_id=?", (content_id,))
+    db.execute("DELETE FROM content WHERE id=?", (content_id,))
+    delete_content_files(content_id)
+    logger.debug("delete_content_cascade: content_id=%s удалён каскадом", content_id)
 
 
 # ─── Очистка после рендера ────────────────────────────────────────────────────

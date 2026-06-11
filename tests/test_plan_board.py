@@ -8,7 +8,7 @@
 - POST /plan/item/{id}/save: меняет title, дату, brief
 - POST /plan/item/{id}/approve: меняет статус proposed → approved
 - POST /plan/item/{id}/reject: меняет статус → rejected
-- DELETE /plan/item/{id}: удаляет пункт (только если content_id IS NULL)
+- DELETE /plan/item/{id}: удаляет proposed/rejected/error (с каскадом при content_id)
 - POST /plan/approve-period: одобряет только proposed текущего месяца
 - POST /plan/autogen/{slug}: toggle autogen в settings
 - Страница без проектов: 200, пустое состояние
@@ -364,8 +364,8 @@ class TestPlanItemModal:
         assert resp.status_code == 200
         assert "Удалить пункт" in resp.text
 
-    def test_modal_hides_delete_button_with_content(self, client, patch_env):
-        """Модалка пункта с content_id НЕ содержит кнопку «Удалить пункт»."""
+    def test_modal_hides_delete_button_for_generated(self, client, patch_env):
+        """Модалка пункта со статусом generated НЕ содержит кнопку «Удалить пункт»."""
         _setup_db()
         with get_db() as db:
             s, pid = _create_project(db)
@@ -374,11 +374,27 @@ class TestPlanItemModal:
                 (pid, "post", "Пост", "approved"),
             )
             cid = cur.lastrowid
-            iid = _create_plan_item(db, pid, content_id=cid)
+            iid = _create_plan_item(db, pid, status="generated", content_id=cid)
 
         resp = client.get(f"/plan/item/{iid}")
         assert resp.status_code == 200
         assert "Удалить пункт" not in resp.text
+
+    def test_modal_shows_delete_button_for_error_with_content(self, client, patch_env):
+        """Модалка error-пункта с content_id показывает кнопку «Удалить пункт»."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cur = db.execute(
+                "INSERT INTO content (project_id, type, title, status) VALUES (?,?,?,?)",
+                (pid, "post", "Ошибочный контент", "approved"),
+            )
+            cid = cur.lastrowid
+            iid = _create_plan_item(db, pid, status="error", content_id=cid)
+
+        resp = client.get(f"/plan/item/{iid}")
+        assert resp.status_code == 200
+        assert "Удалить пункт" in resp.text
 
 
 # ─── 3. Сохранение правок ─────────────────────────────────────────────────────
@@ -638,27 +654,118 @@ class TestPlanItemDelete:
             row = db.execute("SELECT id FROM plan_items WHERE id=?", (iid,)).fetchone()
         assert row is None  # удалён
 
-    def test_delete_item_with_content_422(self, client, patch_env):
-        """DELETE /plan/item/{id} с content_id — 422, пункт не удалён."""
+    def test_delete_error_item_with_content_ok(self, client, patch_env):
+        """DELETE /plan/item/{id} для error-пункта с content_id — 200, каскад."""
         _setup_db()
         with get_db() as db:
             s, pid = _create_project(db)
             cur = db.execute(
                 "INSERT INTO content (project_id, type, title, status) VALUES (?,?,?,?)",
-                (pid, "post", "Пост", "approved"),
+                (pid, "post", "Черновик ошибки", "approved"),
             )
             cid = cur.lastrowid
-            iid = _create_plan_item(db, pid, content_id=cid)
+            # schedule-запись, привязанная к контенту
+            db.execute(
+                "INSERT INTO schedule (content_id, platform, planned_at, status) VALUES (?,?,?,?)",
+                (cid, "telegram", "2026-06-15 10:00:00", "planned"),
+            )
+            iid = _create_plan_item(db, pid, status="error", content_id=cid)
+
+        resp = client.delete(f"/plan/item/{iid}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("ok") is True
+
+        with get_db() as db:
+            # plan_item удалён
+            pi_row = db.execute("SELECT id FROM plan_items WHERE id=?", (iid,)).fetchone()
+            assert pi_row is None
+            # content удалён
+            c_row = db.execute("SELECT id FROM content WHERE id=?", (cid,)).fetchone()
+            assert c_row is None
+            # schedule удалён
+            s_row = db.execute("SELECT id FROM schedule WHERE content_id=?", (cid,)).fetchone()
+            assert s_row is None
+
+    def test_delete_proposed_item_with_content_ok(self, client, patch_env):
+        """DELETE /plan/item/{id} для proposed-пункта с content_id — 200, каскад."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cur = db.execute(
+                "INSERT INTO content (project_id, type, title, status) VALUES (?,?,?,?)",
+                (pid, "post", "Черновик proposed", "approved"),
+            )
+            cid = cur.lastrowid
+            iid = _create_plan_item(db, pid, status="proposed", content_id=cid)
+
+        resp = client.delete(f"/plan/item/{iid}")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+
+        with get_db() as db:
+            assert db.execute("SELECT id FROM plan_items WHERE id=?", (iid,)).fetchone() is None
+            assert db.execute("SELECT id FROM content WHERE id=?", (cid,)).fetchone() is None
+
+    def test_delete_rejected_item_with_content_ok(self, client, patch_env):
+        """DELETE /plan/item/{id} для rejected-пункта с content_id — 200, каскад."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cur = db.execute(
+                "INSERT INTO content (project_id, type, title, status) VALUES (?,?,?,?)",
+                (pid, "post", "Черновик rejected", "approved"),
+            )
+            cid = cur.lastrowid
+            iid = _create_plan_item(db, pid, status="rejected", content_id=cid)
+
+        resp = client.delete(f"/plan/item/{iid}")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+
+        with get_db() as db:
+            assert db.execute("SELECT id FROM plan_items WHERE id=?", (iid,)).fetchone() is None
+            assert db.execute("SELECT id FROM content WHERE id=?", (cid,)).fetchone() is None
+
+    def test_delete_generating_item_with_content_422(self, client, patch_env):
+        """DELETE /plan/item/{id} для generating-пункта с content_id — 422."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cur = db.execute(
+                "INSERT INTO content (project_id, type, title, status) VALUES (?,?,?,?)",
+                (pid, "post", "В генерации", "approved"),
+            )
+            cid = cur.lastrowid
+            iid = _create_plan_item(db, pid, status="generating", content_id=cid)
 
         resp = client.delete(f"/plan/item/{iid}")
         assert resp.status_code == 422
         data = resp.json()
-        # Человекочитаемое сообщение про Публикацию
-        assert "Публикац" in data.get("error", "")
+        assert "Публикац" in data.get("error", "") or "работе" in data.get("error", "")
 
         with get_db() as db:
-            row = db.execute("SELECT id FROM plan_items WHERE id=?", (iid,)).fetchone()
-        assert row is not None  # не удалён
+            assert db.execute("SELECT id FROM plan_items WHERE id=?", (iid,)).fetchone() is not None
+
+    def test_delete_generated_item_with_content_422(self, client, patch_env):
+        """DELETE /plan/item/{id} для generated-пункта с content_id — 422."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cur = db.execute(
+                "INSERT INTO content (project_id, type, title, status) VALUES (?,?,?,?)",
+                (pid, "post", "Готово", "approved"),
+            )
+            cid = cur.lastrowid
+            iid = _create_plan_item(db, pid, status="generated", content_id=cid)
+
+        resp = client.delete(f"/plan/item/{iid}")
+        assert resp.status_code == 422
+        data = resp.json()
+        assert "Публикац" in data.get("error", "") or "готов" in data.get("error", "")
+
+        with get_db() as db:
+            assert db.execute("SELECT id FROM plan_items WHERE id=?", (iid,)).fetchone() is not None
 
     def test_delete_item_404_nonexistent(self, client, patch_env):
         """DELETE /plan/item/99999 → 404."""

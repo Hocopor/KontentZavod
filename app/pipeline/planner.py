@@ -23,6 +23,7 @@ from app import catalog
 from app.db import get_db, get_project_settings
 from app.llm import chat, LLMError
 from app.pipeline.prompts import load_prompt
+from app.services.cleanup import delete_content_cascade
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +42,15 @@ def refresh_plan(
     """
     Управляемая перегенерация контент-плана проекта.
 
-    Удаляет plan_items со статусом 'proposed' в окне планирования
-    [сегодня; сегодня+plan_horizon_days], с фильтрацией по platform и
-    content_type, затем вызывает generate_plan для затронутых платформ.
+    Удаляет plan_items со статусами 'proposed', 'rejected', 'error' в окне
+    планирования [сегодня; сегодня+plan_horizon_days], с фильтрацией по
+    platform и content_type, затем вызывает generate_plan для затронутых
+    платформ.
+
+    Для error-пунктов с content_id выполняется каскадное удаление:
+    DELETE schedule → DELETE content → файлы → DELETE plan_item.
+
+    После обновления остаются только: approved, generating, generated.
 
     Args:
         project_id:   ID проекта.
@@ -96,12 +103,51 @@ def refresh_plan(
         if not platforms_to_regen:
             return {"deleted": 0, "created": 0, "platforms": [], "error": None}
 
-        # Удалить proposed-пункты в окне планирования
+        # ── Собрать content_id error-пунктов для каскадного удаления ─────────
+        # (у error-пунктов может быть content_id — его нужно удалить каскадом
+        #  ПЕРЕД удалением plan_items, пока есть открытое соединение)
+        if content_type is not None:
+            error_rows = db.execute(
+                """
+                SELECT content_id FROM plan_items
+                WHERE project_id=? AND status='error' AND content_id IS NOT NULL
+                  AND platform=? AND content_type=?
+                  AND date >= ? AND date <= ?
+                """,
+                (project_id, platform, content_type, date_from_str, date_to_str),
+            ).fetchall()
+        elif platform is not None:
+            error_rows = db.execute(
+                """
+                SELECT content_id FROM plan_items
+                WHERE project_id=? AND status='error' AND content_id IS NOT NULL
+                  AND platform=?
+                  AND date >= ? AND date <= ?
+                """,
+                (project_id, platform, date_from_str, date_to_str),
+            ).fetchall()
+        else:
+            error_rows = db.execute(
+                """
+                SELECT content_id FROM plan_items
+                WHERE project_id=? AND status='error' AND content_id IS NOT NULL
+                  AND date >= ? AND date <= ?
+                """,
+                (project_id, date_from_str, date_to_str),
+            ).fetchall()
+
+        error_content_ids = [r["content_id"] for r in error_rows]
+
+        # Каскадно удалить schedule + content для error-пунктов
+        for cid in error_content_ids:
+            delete_content_cascade(db, cid)
+
+        # Удалить proposed/rejected/error-пункты в окне планирования
         if content_type is not None:
             db.execute(
                 """
                 DELETE FROM plan_items
-                WHERE project_id=? AND status='proposed'
+                WHERE project_id=? AND status IN ('proposed', 'rejected', 'error')
                   AND platform=? AND content_type=?
                   AND date >= ? AND date <= ?
                 """,
@@ -111,7 +157,7 @@ def refresh_plan(
             db.execute(
                 """
                 DELETE FROM plan_items
-                WHERE project_id=? AND status='proposed'
+                WHERE project_id=? AND status IN ('proposed', 'rejected', 'error')
                   AND platform=?
                   AND date >= ? AND date <= ?
                 """,
@@ -121,7 +167,7 @@ def refresh_plan(
             db.execute(
                 """
                 DELETE FROM plan_items
-                WHERE project_id=? AND status='proposed'
+                WHERE project_id=? AND status IN ('proposed', 'rejected', 'error')
                   AND date >= ? AND date <= ?
                 """,
                 (project_id, date_from_str, date_to_str),

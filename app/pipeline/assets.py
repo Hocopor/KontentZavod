@@ -6,6 +6,10 @@
   video_slideshow — статичные картинки через Pollinations.ai (без ключа)
 
 FAKE_ASSETS=1 → плейсхолдеры через ffmpeg lavfi без сети.
+
+Прокси-фейловер (для РФ-серверов):
+  _http_get и _download_stream сначала пробуют прямой запрос, при 402/403/429
+  или сетевых ошибках — перебирают активные HTTP-прокси из пула proxies.py.
 """
 import json
 import logging
@@ -52,31 +56,134 @@ def _scene_filename(idx: int, ext: str) -> str:
     return f"scene_{idx + 1:02d}.{ext}"
 
 
+def _get_http_proxies() -> list[str]:
+    """
+    Вернуть список URL активных HTTP-прокси из пула (socks5 пропускаются).
+    Graceful: возвращает [] при отсутствии таблицы или любой ошибке БД.
+    """
+    try:
+        from app.db import get_db  # noqa: PLC0415
+        from app.services.proxies import list_active_proxies  # noqa: PLC0415
+
+        with get_db() as db:
+            proxies = list_active_proxies(db)
+        return [
+            p["url"] for p in proxies
+            if not p["url"].lower().startswith("socks5://")
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Не удалось загрузить прокси для assets: %s", exc)
+        return []
+
+
 def _http_get(url: str, headers: dict | None = None, params: dict | None = None) -> httpx.Response:
-    """GET с таймаутом и 1 повтором при сетевой ошибке."""
+    """
+    GET с таймаутом, 1 повтором при сетевой ошибке и прокси-фейловером.
+
+    Алгоритм:
+      1. Прямой запрос (с 1 ретраем при сетевых ошибках).
+      2. При сетевых ошибках (TransportError/TimeoutException) или HTTP 402/403/429
+         — перебор активных HTTP-прокси пула (socks5 пропускаются), по одной попытке.
+      3. Если всё провалилось — raise последней ошибки.
+    """
+    _headers = headers or {}
+    _params = params or {}
+    last_exc: Exception | None = None
+
+    # Попытка 1: напрямую (с 1 ретраем)
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            return httpx.get(url, headers=headers or {}, params=params or {}, timeout=_TIMEOUT, follow_redirects=True)
+            resp = httpx.get(url, headers=_headers, params=_params, timeout=_TIMEOUT, follow_redirects=True)
+            if resp.status_code not in (402, 403, 429):
+                return resp
+            # HTTP-блокировка — считаем ошибкой для фейловера
+            last_exc = httpx.HTTPStatusError(
+                f"HTTP {resp.status_code}",
+                request=resp.request,
+                response=resp,
+            )
+            logger.warning("GET %s → HTTP %s, пробую прокси…", url, resp.status_code)
+            break  # ретраи не помогут при 402/403/429 — сразу к прокси
         except (httpx.TransportError, httpx.TimeoutException) as exc:
+            last_exc = exc
             if attempt >= _MAX_RETRIES:
-                raise
+                logger.warning("GET %s провалился (%s), пробую прокси…", url, exc)
+                break
             logger.warning("Повтор GET %s после ошибки: %s", url, exc)
+
+    # Попытки через прокси
+    from app.services.proxies import mask_proxy_url  # noqa: PLC0415
+
+    for proxy_url in _get_http_proxies():
+        try:
+            with httpx.Client(proxy=proxy_url, timeout=_TIMEOUT) as client:
+                resp = client.get(url, headers=_headers, params=_params, follow_redirects=True)
+            masked = mask_proxy_url(proxy_url)
+            logger.info("GET %s скачан через прокси %s", url, masked)
+            return resp
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Прокси %s не помог для GET %s: %s", mask_proxy_url(proxy_url), url, exc)
+            last_exc = exc
+
+    if last_exc is not None:
+        raise last_exc
+    # Сюда не должны попасть, но на всякий случай
+    raise AssetsError(f"Не удалось выполнить GET {url}")
 
 
 def _download_stream(url: str, dest: Path, headers: dict | None = None) -> None:
-    """Потоковое скачивание файла по URL в dest."""
+    """
+    Потоковое скачивание файла по URL в dest с прокси-фейловером.
+
+    Алгоритм:
+      1. Прямая попытка (с 1 ретраем при сетевых ошибках / HTTPStatusError).
+      2. При сетевых ошибках или HTTPStatusError (вкл. 402/403/429)
+         — перебор активных HTTP-прокси пула, по одной попытке каждый.
+      3. Если всё провалилось — raise последней ошибки.
+    """
+    _headers = headers or {}
+    last_exc: Exception | None = None
+
+    # Попытка 1: напрямую (с 1 ретраем)
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            with httpx.stream("GET", url, headers=headers or {}, timeout=_TIMEOUT, follow_redirects=True) as resp:
+            with httpx.stream("GET", url, headers=_headers, timeout=_TIMEOUT, follow_redirects=True) as resp:
                 resp.raise_for_status()
                 with dest.open("wb") as f:
                     for chunk in resp.iter_bytes(chunk_size=65536):
                         f.write(chunk)
             return
         except (httpx.TransportError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+            last_exc = exc
             if attempt >= _MAX_RETRIES:
-                raise
+                logger.warning("Скачивание %s провалилось (%s), пробую прокси…", url, exc)
+                break
             logger.warning("Повтор скачивания %s после ошибки: %s", url, exc)
+
+    # Попытки через прокси
+    from app.services.proxies import mask_proxy_url  # noqa: PLC0415
+
+    for proxy_url in _get_http_proxies():
+        try:
+            with httpx.Client(proxy=proxy_url, timeout=_TIMEOUT) as client:
+                with client.stream("GET", url, headers=_headers, follow_redirects=True) as resp:
+                    resp.raise_for_status()
+                    with dest.open("wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=65536):
+                            f.write(chunk)
+            masked = mask_proxy_url(proxy_url)
+            logger.info("Скачивание %s выполнено через прокси %s", url, masked)
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Прокси %s не помог для скачивания %s: %s",
+                mask_proxy_url(proxy_url), url, exc,
+            )
+            last_exc = exc
+
+    if last_exc is not None:
+        raise last_exc
+    raise AssetsError(f"Не удалось скачать {url}")
 
 
 # ─── Fake-режим (FAKE_ASSETS=1) ───────────────────────────────────────────────
@@ -224,23 +331,50 @@ def _fetch_pixabay_video(query: str, dest: Path) -> bool:
 
 def _fetch_pollinations_image(keywords: list[str], dest: Path) -> bool:
     """
-    Генерация вертикальной картинки через Pollinations.ai без ключа.
+    Генерация вертикальной картинки через Pollinations.ai.
+
     Промпт: keywords + ", vertical photo, no text".
+
+    Порядок попыток:
+      1. С nologo=true (+ токен из POLLINATIONS_TOKEN если задан).
+      2. При 402 — повтор без nologo=true (анонимный тир может требовать лого).
+      3. Обе попытки используют прокси-фейловер через _download_stream.
+
     Возвращает True при успехе.
     """
     prompt_text = ", ".join(keywords) + ", vertical photo, no text"
-    url = _POLLINATIONS_URL.format(prompt=quote(prompt_text))
+    base_url = _POLLINATIONS_URL.format(prompt=quote(prompt_text))
 
-    try:
-        _download_stream(
-            url + "?width=1080&height=1920&nologo=true",
-            dest,
-        )
-        logger.info("Pollinations: сгенерирована картинка → %s", dest.name)
-        return True
-    except Exception as exc:
-        logger.warning("Pollinations: ошибка генерации: %s", exc)
-        return False
+    # Токен (опциональный) — снимает анонимный IP-лимит
+    token = settings.POLLINATIONS_TOKEN
+    token_param = f"&token={token}" if token else ""
+
+    urls_to_try = [
+        base_url + f"?width=1080&height=1920&nologo=true{token_param}",
+        base_url + f"?width=1080&height=1920{token_param}",
+    ]
+
+    for attempt_idx, full_url in enumerate(urls_to_try):
+        try:
+            _download_stream(full_url, dest)
+            if attempt_idx > 0:
+                logger.info("Pollinations: сгенерирована картинка (без nologo) → %s", dest.name)
+            else:
+                logger.info("Pollinations: сгенерирована картинка → %s", dest.name)
+            return True
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 402 and attempt_idx == 0:
+                logger.warning(
+                    "Pollinations: 402 с nologo=true — повторяю без nologo (анонимный лимит)"
+                )
+                continue
+            logger.warning("Pollinations: HTTP-ошибка %s: %s", exc.response.status_code, exc)
+            return False
+        except Exception as exc:
+            logger.warning("Pollinations: ошибка генерации: %s", exc)
+            return False
+
+    return False
 
 
 # ─── Основная функция ─────────────────────────────────────────────────────────

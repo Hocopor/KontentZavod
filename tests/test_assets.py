@@ -526,3 +526,177 @@ def test_cleanup_after_render_no_assets_dir(tmp_path, monkeypatch):
 
     # Не должно поднимать исключений
     cleanup_after_render(999)
+
+
+# ─── Прокси-фейловер ──────────────────────────────────────────────────────────
+
+
+def _make_stream_ctx(data: bytes = b"FAKE") -> MagicMock:
+    """Собрать fake context-manager для httpx.stream / client.stream."""
+    ctx = MagicMock()
+    ctx.__enter__ = MagicMock(return_value=ctx)
+    ctx.__exit__ = MagicMock(return_value=False)
+    ctx.raise_for_status = MagicMock()
+    ctx.iter_bytes = MagicMock(return_value=[data])
+    return ctx
+
+
+class TestProxyFailover:
+    """
+    Тесты прокси-фейловера в _http_get и _download_stream.
+    Мокаем app.pipeline.assets.httpx (не глобальный httpx).
+    """
+
+    def test_download_stream_403_falls_back_to_proxy(self, tmp_path, monkeypatch):
+        """
+        Прямое скачивание → 403 HTTPStatusError → качается через прокси.
+        """
+        monkeypatch.setenv("FAKE_ASSETS", "0")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("PEXELS_API_KEY", "")
+        monkeypatch.setenv("PIXABAY_API_KEY", "")
+
+        import httpx as httpx_module
+
+        # Прямой stream: симулируем 403
+        direct_resp = MagicMock()
+        direct_resp.status_code = 403
+        direct_resp.raise_for_status = MagicMock(
+            side_effect=httpx_module.HTTPStatusError(
+                "403 Forbidden",
+                request=MagicMock(),
+                response=direct_resp,
+            )
+        )
+        direct_ctx = MagicMock()
+        direct_ctx.__enter__ = MagicMock(return_value=direct_resp)
+        direct_ctx.__exit__ = MagicMock(return_value=False)
+
+        # Через прокси-клиент: успех
+        proxy_stream_ctx = _make_stream_ctx(b"\xff\xd8\xff" + b"\x00" * 50)
+
+        proxy_client = MagicMock()
+        proxy_client.__enter__ = MagicMock(return_value=proxy_client)
+        proxy_client.__exit__ = MagicMock(return_value=False)
+        proxy_client.stream = MagicMock(return_value=proxy_stream_ctx)
+
+        proxy_used = []
+
+        class FakeClient:
+            def __init__(self, proxy=None, timeout=None, **kw):
+                self._proxy = proxy
+                proxy_used.append(proxy)
+
+            def __enter__(self):
+                return proxy_client
+
+            def __exit__(self, *args):
+                pass
+
+        # Мокаем list_active_proxies — один http-прокси
+        monkeypatch.setattr(
+            "app.pipeline.assets._get_http_proxies",
+            lambda: ["http://proxy.example.com:3128/"],
+        )
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "stream", lambda *a, **kw: direct_ctx)
+        monkeypatch.setattr(assets_mod.httpx, "Client", FakeClient)
+
+        dest = tmp_path / "test.jpg"
+        assets_mod._download_stream("https://image.pollinations.ai/test", dest)
+
+        assert dest.exists(), "Файл должен быть скачан через прокси"
+        assert len(proxy_used) >= 1, "Прокси-клиент должен быть создан"
+
+    def test_download_stream_no_proxies_raises(self, tmp_path, monkeypatch):
+        """
+        Прямое скачивание → 403, прокси в пуле нет → raise HTTPStatusError.
+        """
+        import httpx as httpx_module
+
+        direct_resp = MagicMock()
+        direct_resp.status_code = 403
+        direct_resp.raise_for_status = MagicMock(
+            side_effect=httpx_module.HTTPStatusError(
+                "403",
+                request=MagicMock(),
+                response=direct_resp,
+            )
+        )
+        direct_ctx = MagicMock()
+        direct_ctx.__enter__ = MagicMock(return_value=direct_resp)
+        direct_ctx.__exit__ = MagicMock(return_value=False)
+
+        monkeypatch.setattr(
+            "app.pipeline.assets._get_http_proxies",
+            lambda: [],
+        )
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "stream", lambda *a, **kw: direct_ctx)
+
+        dest = tmp_path / "nope.jpg"
+        with pytest.raises(httpx_module.HTTPStatusError):
+            assets_mod._download_stream("https://example.com/video.mp4", dest)
+
+    def test_pollinations_402_nologo_retry_without_nologo(self, tmp_path, monkeypatch):
+        """
+        Pollinations: 402 с nologo=true → повтор без nologo → успех.
+        """
+        monkeypatch.setenv("POLLINATIONS_TOKEN", "")
+
+        import httpx as httpx_module
+
+        call_urls: list[str] = []
+
+        def fake_download_stream(url: str, dest, headers=None):
+            call_urls.append(url)
+            if "nologo=true" in url:
+                # первый вызов — 402
+                resp_mock = MagicMock()
+                resp_mock.status_code = 402
+                raise httpx_module.HTTPStatusError(
+                    "402",
+                    request=MagicMock(),
+                    response=resp_mock,
+                )
+            # второй вызов — успех (без nologo)
+            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod, "_download_stream", fake_download_stream)
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        dest = tmp_path / "scene.jpg"
+        result = assets_mod._fetch_pollinations_image(["sunset", "sky"], dest)
+
+        assert result is True, "Должен вернуть True при успехе без nologo"
+        assert len(call_urls) == 2, f"Должно быть 2 вызова, было: {call_urls}"
+        assert "nologo=true" in call_urls[0], "Первый вызов — с nologo"
+        assert "nologo=true" not in call_urls[1], "Второй вызов — без nologo"
+
+    def test_pollinations_token_added_to_url(self, tmp_path, monkeypatch):
+        """
+        POLLINATIONS_TOKEN задан → токен добавляется в URL.
+        """
+        monkeypatch.setenv("POLLINATIONS_TOKEN", "my-secret-token")
+
+        call_urls: list[str] = []
+
+        def fake_download_stream(url: str, dest, headers=None):
+            call_urls.append(url)
+            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod, "_download_stream", fake_download_stream)
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        dest = tmp_path / "scene_token.jpg"
+        result = assets_mod._fetch_pollinations_image(["nature"], dest)
+
+        assert result is True
+        assert len(call_urls) >= 1
+        assert "token=my-secret-token" in call_urls[0], (
+            f"Токен должен быть в URL, но URL был: {call_urls[0]}"
+        )

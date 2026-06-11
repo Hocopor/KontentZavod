@@ -22,6 +22,7 @@ from app import catalog
 from app.db import get_db, get_project_settings
 from app.templates_env import templates
 from app.pipeline.planner import refresh_plan
+from app.services.cleanup import delete_content_cascade
 
 router = APIRouter(prefix="/plan")
 
@@ -481,19 +482,36 @@ async def plan_item_reject(request: Request, item_id: int):
 async def plan_item_delete(request: Request, item_id: int):
     """
     Удалить пункт плана.
-    Разрешено только если content_id IS NULL (контент ещё не создан).
-    Если контент уже создан — 422 с человекочитаемым сообщением.
+
+    Разрешено для статусов proposed / rejected / error:
+      - если content_id IS NULL — просто удаляем пункт;
+      - если content_id IS NOT NULL (error-пункт с черновиком) — каскад:
+        DELETE schedule → DELETE content → файлы → DELETE plan_item.
+
+    Запрещено (422) для статусов generating / generated:
+      контент в работе или готов — управляйте им во вкладке Публикация.
     """
+    content_id_to_clean: int | None = None
+
     with get_db() as db:
         row = _get_item_or_404(db, item_id)
         if row is None:
             return JSONResponse({"error": "Пункт плана не найден"}, status_code=404)
 
-        if row["content_id"] is not None:
+        status = row["status"]
+
+        # generating/generated — запрещаем: контент в работе или готов
+        if status in ("generating", "generated"):
             return JSONResponse(
-                {"error": "Контент уже создан — управляйте им во вкладке Публикация"},
+                {"error": "Контент в работе или готов — управляйте им во вкладке Публикация"},
                 status_code=422,
             )
+
+        content_id = row["content_id"]
+        if content_id is not None:
+            # Каскадное удаление: schedule + content + файлы
+            delete_content_cascade(db, content_id)
+            content_id_to_clean = content_id
 
         db.execute("DELETE FROM plan_items WHERE id=?", (item_id,))
 

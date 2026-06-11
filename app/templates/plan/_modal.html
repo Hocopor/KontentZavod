@@ -118,10 +118,10 @@
         </button>
         {% endif %}
 
-        {% if item.content_id is none or item.content_id == '' %}
+        {% if item.status in ('proposed', 'rejected', 'error') %}
         <button type="button" class="btn btn-danger btn-sm"
                 onclick="deletePlanItem({{ item.id }})"
-                title="Удалить пункт плана (только если контент ещё не создан)">
+                title="Удалить пункт плана вместе с черновиком контента">
             🗑 Удалить пункт
         </button>
         {% endif %}
