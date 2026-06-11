@@ -221,8 +221,8 @@ def test_pexels_empty_fallback_pixabay(tmp_path, monkeypatch):
     assert any("pixabay" in u for u in downloaded_urls), "Скачивание с Pixabay не произошло"
 
 
-def test_pexels_pixabay_both_empty_fallback_pollinations(tmp_path, monkeypatch):
-    """Pexels пуст + Pixabay пуст + template=video_footage → фоллбэк на картинку Pollinations."""
+def test_pexels_pixabay_both_empty_fallback_fetch_image(tmp_path, monkeypatch):
+    """Pexels видео пуст + Pixabay видео пуст + template=video_footage → фоллбэк через fetch_image."""
     monkeypatch.setenv("FAKE_ASSETS", "0")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("PEXELS_API_KEY", "fake-pexels-key")
@@ -232,21 +232,20 @@ def test_pexels_pixabay_both_empty_fallback_pollinations(tmp_path, monkeypatch):
     empty_resp.raise_for_status = MagicMock()
     empty_resp.json.return_value = {"videos": [], "hits": []}
 
-    downloaded_urls = []
-
+    import app.pipeline.assets as assets_mod
     import httpx
 
-    def fake_stream(method, url, **kwargs):
-        downloaded_urls.append(url)
-        ctx = MagicMock()
-        ctx.__enter__ = MagicMock(return_value=ctx)
-        ctx.__exit__ = MagicMock(return_value=False)
-        ctx.raise_for_status = MagicMock()
-        ctx.iter_bytes = MagicMock(return_value=[b"\xff\xd8\xff\xe0" + b"\x00" * 100])  # fake jpg
-        return ctx
-
     monkeypatch.setattr(httpx, "get", lambda url, **kw: empty_resp)
-    monkeypatch.setattr(httpx, "stream", fake_stream)
+
+    # Мокаем fetch_image — единую цепочку картинок
+    fetch_image_called = []
+
+    def mock_fetch_image(keywords, dest):
+        fetch_image_called.append(keywords)
+        dest.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)  # fake jpg
+        return True
+
+    monkeypatch.setattr(assets_mod, "fetch_image", mock_fetch_image)
 
     from app.pipeline.assets import fetch_scene_assets
 
@@ -258,9 +257,7 @@ def test_pexels_pixabay_both_empty_fallback_pollinations(tmp_path, monkeypatch):
 
     assert len(paths) == 1
     assert paths[0].suffix == ".jpg", f"Ожидался .jpg (фоллбэк), получен {paths[0].suffix}"
-    assert any("pollinations" in u for u in downloaded_urls), (
-        f"Pollinations не вызван. URLs: {downloaded_urls}"
-    )
+    assert len(fetch_image_called) == 1, "fetch_image должен вызываться как фоллбэк"
 
 
 # ─── pick_music ───────────────────────────────────────────────────────────────
@@ -700,3 +697,305 @@ class TestProxyFailover:
         assert "token=my-secret-token" in call_urls[0], (
             f"Токен должен быть в URL, но URL был: {call_urls[0]}"
         )
+
+
+# ─── Pexels Photos / Pixabay Photos ──────────────────────────────────────────
+
+
+def _make_pexels_photo_response(portrait_url: str = "https://photos.pexels.com/portrait.jpg") -> MagicMock:
+    """Собрать fake-ответ Pexels Photos API."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "photos": [
+            {
+                "id": 101,
+                "src": {
+                    "portrait": portrait_url,
+                    "large2x": "https://photos.pexels.com/large2x.jpg",
+                },
+            }
+        ]
+    }
+    return resp
+
+
+def _make_pixabay_photo_response(image_url: str = "https://pixabay.com/photo.jpg") -> MagicMock:
+    """Собрать fake-ответ Pixabay Photos API."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "hits": [
+            {
+                "id": 202,
+                "largeImageURL": image_url,
+                "webformatURL": "https://pixabay.com/small.jpg",
+            }
+        ]
+    }
+    return resp
+
+
+class TestPexelsPhoto:
+    """Тесты _fetch_pexels_photo."""
+
+    def test_pexels_photo_success(self, tmp_path, monkeypatch):
+        """Pexels Photos: портретный src.portrait → скачивается файл, возвращает True."""
+        monkeypatch.setenv("PEXELS_API_KEY", "fake-pexels-key")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        pexels_resp = _make_pexels_photo_response()
+        downloaded_urls = []
+
+        def fake_stream(method, url, **kwargs):
+            downloaded_urls.append(url)
+            ctx = MagicMock()
+            ctx.__enter__ = MagicMock(return_value=ctx)
+            ctx.__exit__ = MagicMock(return_value=False)
+            ctx.raise_for_status = MagicMock()
+            ctx.iter_bytes = MagicMock(return_value=[b"\xff\xd8\xff" + b"\x00" * 20])
+            return ctx
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "get", lambda url, **kw: pexels_resp)
+        monkeypatch.setattr(assets_mod.httpx, "stream", fake_stream)
+
+        dest = tmp_path / "photo.jpg"
+        result = assets_mod._fetch_pexels_photo("marketing workspace", dest)
+
+        assert result is True
+        assert dest.exists()
+        assert any("portrait" in u for u in downloaded_urls), (
+            f"Должен быть скачан portrait URL, URLs: {downloaded_urls}"
+        )
+
+    def test_pexels_photo_no_key_returns_false(self, tmp_path, monkeypatch):
+        """Без PEXELS_API_KEY → сразу False, без сетевых запросов."""
+        monkeypatch.setenv("PEXELS_API_KEY", "")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import app.pipeline.assets as assets_mod
+
+        dest = tmp_path / "photo.jpg"
+        result = assets_mod._fetch_pexels_photo("nature", dest)
+
+        assert result is False
+        assert not dest.exists()
+
+    def test_pexels_photo_empty_result_returns_false(self, tmp_path, monkeypatch):
+        """Pexels Photos возвращает пустой список → False."""
+        monkeypatch.setenv("PEXELS_API_KEY", "fake-pexels-key")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        empty_resp = MagicMock()
+        empty_resp.raise_for_status = MagicMock()
+        empty_resp.json.return_value = {"photos": []}
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "get", lambda url, **kw: empty_resp)
+
+        dest = tmp_path / "photo.jpg"
+        result = assets_mod._fetch_pexels_photo("nonexistent query xyz", dest)
+
+        assert result is False
+
+
+class TestPixabayPhoto:
+    """Тесты _fetch_pixabay_photo."""
+
+    def test_pixabay_photo_success(self, tmp_path, monkeypatch):
+        """Pixabay Photos: largeImageURL → скачивается файл, возвращает True."""
+        monkeypatch.setenv("PIXABAY_API_KEY", "fake-pixabay-key")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        pixabay_resp = _make_pixabay_photo_response()
+        downloaded_urls = []
+
+        def fake_stream(method, url, **kwargs):
+            downloaded_urls.append(url)
+            ctx = MagicMock()
+            ctx.__enter__ = MagicMock(return_value=ctx)
+            ctx.__exit__ = MagicMock(return_value=False)
+            ctx.raise_for_status = MagicMock()
+            ctx.iter_bytes = MagicMock(return_value=[b"\xff\xd8\xff" + b"\x00" * 20])
+            return ctx
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "get", lambda url, **kw: pixabay_resp)
+        monkeypatch.setattr(assets_mod.httpx, "stream", fake_stream)
+
+        dest = tmp_path / "pixabay_photo.jpg"
+        result = assets_mod._fetch_pixabay_photo("business success", dest)
+
+        assert result is True
+        assert dest.exists()
+        assert any("pixabay" in u for u in downloaded_urls), (
+            f"Должен скачиваться URL от Pixabay, URLs: {downloaded_urls}"
+        )
+
+    def test_pixabay_photo_no_key_returns_false(self, tmp_path, monkeypatch):
+        """Без PIXABAY_API_KEY → сразу False."""
+        monkeypatch.setenv("PIXABAY_API_KEY", "")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import app.pipeline.assets as assets_mod
+
+        dest = tmp_path / "photo.jpg"
+        result = assets_mod._fetch_pixabay_photo("nature", dest)
+
+        assert result is False
+        assert not dest.exists()
+
+    def test_pixabay_photo_empty_result_returns_false(self, tmp_path, monkeypatch):
+        """Pixabay Photos возвращает пустой список → False."""
+        monkeypatch.setenv("PIXABAY_API_KEY", "fake-pixabay-key")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        empty_resp = MagicMock()
+        empty_resp.raise_for_status = MagicMock()
+        empty_resp.json.return_value = {"hits": []}
+
+        import app.pipeline.assets as assets_mod
+        monkeypatch.setattr(assets_mod.httpx, "get", lambda url, **kw: empty_resp)
+
+        dest = tmp_path / "photo.jpg"
+        result = assets_mod._fetch_pixabay_photo("nonexistent xyz 999", dest)
+
+        assert result is False
+
+
+# ─── fetch_image цепочка ──────────────────────────────────────────────────────
+
+
+class TestFetchImage:
+    """Тесты публичной функции fetch_image."""
+
+    def test_fake_assets_returns_true(self, tmp_path, monkeypatch):
+        """FAKE_ASSETS=1 → _fake_image + True без сети."""
+        monkeypatch.setenv("FAKE_ASSETS", "1")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        # Мокаем _fake_image чтобы не нужен был ffmpeg
+        import app.pipeline.assets as assets_mod
+        fake_called = []
+
+        def mock_fake_image(dest):
+            fake_called.append(dest)
+            dest.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 10)
+
+        monkeypatch.setattr(assets_mod, "_fake_image", mock_fake_image)
+
+        dest = tmp_path / "result.jpg"
+        result = assets_mod.fetch_image(["nature", "sunset"], dest)
+
+        assert result is True
+        assert len(fake_called) == 1
+
+    def test_pollinations_skipped_without_token(self, tmp_path, monkeypatch):
+        """Без POLLINATIONS_TOKEN → Pollinations не вызывается, идёт к Pexels."""
+        monkeypatch.setenv("FAKE_ASSETS", "0")
+        monkeypatch.setenv("POLLINATIONS_TOKEN", "")
+        monkeypatch.setenv("PEXELS_API_KEY", "fake-key")
+        monkeypatch.setenv("PIXABAY_API_KEY", "")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import app.pipeline.assets as assets_mod
+
+        pollinations_called = []
+        pexels_called = []
+
+        def mock_pollinations(keywords, dest):
+            pollinations_called.append(keywords)
+            return False
+
+        def mock_pexels_photo(query, dest):
+            pexels_called.append(query)
+            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
+            return True
+
+        monkeypatch.setattr(assets_mod, "_fetch_pollinations_image", mock_pollinations)
+        monkeypatch.setattr(assets_mod, "_fetch_pexels_photo", mock_pexels_photo)
+
+        dest = tmp_path / "result.jpg"
+        result = assets_mod.fetch_image(["marketing", "success"], dest)
+
+        assert result is True
+        assert len(pollinations_called) == 0, "Pollinations не должен вызываться без токена"
+        assert len(pexels_called) == 1
+
+    def test_pollinations_with_token_called_first(self, tmp_path, monkeypatch):
+        """С POLLINATIONS_TOKEN → Pollinations вызывается первым и при успехе возвращает True."""
+        monkeypatch.setenv("FAKE_ASSETS", "0")
+        monkeypatch.setenv("POLLINATIONS_TOKEN", "my-token")
+        monkeypatch.setenv("PEXELS_API_KEY", "fake-key")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import app.pipeline.assets as assets_mod
+
+        call_order = []
+
+        def mock_pollinations(keywords, dest):
+            call_order.append("pollinations")
+            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
+            return True
+
+        def mock_pexels_photo(query, dest):
+            call_order.append("pexels")
+            return False
+
+        monkeypatch.setattr(assets_mod, "_fetch_pollinations_image", mock_pollinations)
+        monkeypatch.setattr(assets_mod, "_fetch_pexels_photo", mock_pexels_photo)
+
+        dest = tmp_path / "result.jpg"
+        result = assets_mod.fetch_image(["nature"], dest)
+
+        assert result is True
+        assert call_order == ["pollinations"], f"Ожидался только pollinations, порядок: {call_order}"
+
+    def test_pexels_success_skips_pixabay(self, tmp_path, monkeypatch):
+        """Pexels успешен → Pixabay не вызывается."""
+        monkeypatch.setenv("FAKE_ASSETS", "0")
+        monkeypatch.setenv("POLLINATIONS_TOKEN", "")
+        monkeypatch.setenv("PEXELS_API_KEY", "fake-key")
+        monkeypatch.setenv("PIXABAY_API_KEY", "fake-key")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import app.pipeline.assets as assets_mod
+
+        pixabay_called = []
+
+        def mock_pexels_photo(query, dest):
+            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)
+            return True
+
+        def mock_pixabay_photo(query, dest):
+            pixabay_called.append(query)
+            return False
+
+        monkeypatch.setattr(assets_mod, "_fetch_pexels_photo", mock_pexels_photo)
+        monkeypatch.setattr(assets_mod, "_fetch_pixabay_photo", mock_pixabay_photo)
+
+        dest = tmp_path / "result.jpg"
+        result = assets_mod.fetch_image(["business"], dest)
+
+        assert result is True
+        assert len(pixabay_called) == 0, "Pixabay не должен вызываться если Pexels успешен"
+
+    def test_all_sources_fail_returns_false(self, tmp_path, monkeypatch):
+        """Все источники провалились → False."""
+        monkeypatch.setenv("FAKE_ASSETS", "0")
+        monkeypatch.setenv("POLLINATIONS_TOKEN", "")
+        monkeypatch.setenv("PEXELS_API_KEY", "fake-key")
+        monkeypatch.setenv("PIXABAY_API_KEY", "fake-key")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import app.pipeline.assets as assets_mod
+
+        monkeypatch.setattr(assets_mod, "_fetch_pexels_photo", lambda q, d: False)
+        monkeypatch.setattr(assets_mod, "_fetch_pixabay_photo", lambda q, d: False)
+
+        dest = tmp_path / "result.jpg"
+        result = assets_mod.fetch_image(["some", "query"], dest)
+
+        assert result is False
+        assert not dest.exists()

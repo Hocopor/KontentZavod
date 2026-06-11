@@ -124,6 +124,84 @@ def _assert_valid_video(video_path: Path, preview_path: Path, total_dur: float):
     assert pv["video"]["height"] == 960
 
 
+# ─── Юнит-тесты build_ass: цвета и стиль ─────────────────────────────────────
+
+
+def test_build_ass_default_colors(tmp_path):
+    """Дефолтные цвета: PrimaryColour=жёлтый (#ffe600), SecondaryColour=белый (#ffffff)."""
+    from app.pipeline.tts import WordTiming
+    from app.pipeline.subtitles import build_ass
+
+    words = [
+        WordTiming("Привет", 0.0, 0.4),
+        WordTiming("мир",    0.4, 0.8),
+    ]
+    out = build_ass(words, tmp_path / "subs.ass")
+    content = out.read_text(encoding="utf-8")
+
+    # PrimaryColour = highlight (жёлтый #ffe600 → AABBGGRR = &H0000E6FF)
+    assert "&H0000E6FF" in content, "PrimaryColour (подсветка) не совпадает"
+    # SecondaryColour = font_color (белый #ffffff → &H00FFFFFF)
+    assert "&H00FFFFFF" in content, "SecondaryColour (шрифт) не совпадает"
+    # OutlineColour = outline (чёрный #000000 → &H00000000)
+    assert "&H00000000" in content, "OutlineColour (обрамление) не совпадает"
+
+
+def test_build_ass_custom_colors(tmp_path):
+    """Пользовательские цвета корректно попадают в .ass."""
+    from app.pipeline.tts import WordTiming
+    from app.pipeline.subtitles import build_ass
+
+    words = [WordTiming("Тест", 0.0, 0.4)]
+    out = build_ass(
+        words,
+        tmp_path / "custom.ass",
+        font_color="#ff0000",        # красный → SecondaryColour &H000000FF
+        outline_color="#00ff00",     # зелёный → OutlineColour   &H0000FF00
+        outline_width=3,
+        highlight_color="#0000ff",   # синий   → PrimaryColour   &H00FF0000
+    )
+    content = out.read_text(encoding="utf-8")
+
+    # PrimaryColour = highlight blue #0000ff → &H00FF0000
+    assert "&H00FF0000" in content, "PrimaryColour (синий) не найден"
+    # SecondaryColour = font_color red #ff0000 → &H000000FF
+    assert "&H000000FF" in content, "SecondaryColour (красный) не найден"
+    # OutlineColour = outline green #00ff00 → &H0000FF00
+    assert "&H0000FF00" in content, "OutlineColour (зелёный) не найден"
+    # Outline width
+    assert ",3," in content, "Толщина обрамления 3 не найдена"
+
+
+def test_build_ass_format_line_has_color_fields(tmp_path):
+    """Format-строка стилей содержит поля цветов."""
+    from app.pipeline.tts import WordTiming
+    from app.pipeline.subtitles import build_ass
+
+    out = build_ass([], tmp_path / "empty.ass")
+    content = out.read_text(encoding="utf-8")
+
+    assert "PrimaryColour" in content
+    assert "SecondaryColour" in content
+    assert "OutlineColour" in content
+    assert "BackColour" in content
+
+
+def test_build_ass_outline_width_applied(tmp_path):
+    """Параметр outline_width корректно передаётся в строку Style."""
+    from app.pipeline.tts import WordTiming
+    from app.pipeline.subtitles import build_ass
+
+    out = build_ass(
+        [WordTiming("слово", 0.0, 0.4)],
+        tmp_path / "width.ass",
+        outline_width=7,
+    )
+    content = out.read_text(encoding="utf-8")
+    # Толщина 7 должна быть в строке Style
+    assert ",7," in content, "Толщина обрамления 7 не найдена в Style"
+
+
 # ─── Юнит-тест экранирования пути (без ffmpeg) ────────────────────────────────
 
 

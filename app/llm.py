@@ -613,6 +613,7 @@ _FAKE_ITEM_POST = json.dumps(
             "charts showing growth, modern office, warm lighting, "
             "flat lay style, no text on image"
         ),
+        "image_keywords": ["social media", "analytics", "growth", "workspace"],
         "features": {
             "hook_type": "вопрос",
             "topic": "органический охват в соцсетях",
@@ -631,6 +632,7 @@ _FAKE_ITEM_STORY = json.dumps(
             "modern digital marketing dashboard with growing chart, "
             "blue and green colors, clean minimal design, vertical format"
         ),
+        "image_keywords": ["digital marketing", "analytics", "growth"],
         "overlay_text": "Охват +40% без бюджета",
         "caption": (
             "Один простой хак поднял охват на 40% 📈\n"

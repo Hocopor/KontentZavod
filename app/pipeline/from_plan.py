@@ -19,7 +19,7 @@ import re
 from app import catalog
 from app.db import get_db
 from app.llm import chat, LLMError
-from app.pipeline.assets import _fetch_pollinations_image, _fake_image
+from app.pipeline.assets import fetch_image, _fake_image
 from app.pipeline.prompts import load_prompt
 from app.pipeline.script import _PLATFORM_SPECS
 from app.pipeline.video_script import generate_video_script
@@ -49,7 +49,7 @@ def _parse_item_post(raw: str) -> dict:
         raise ValueError("Отсутствует поле 'text'")
     if not isinstance(data.get("features"), dict):
         raise ValueError("Отсутствует или невалидно поле 'features'")
-    # image_prompt — необязательное поле (LLM может забыть, но промпт требует)
+    # image_prompt и image_keywords — необязательные поля (LLM может забыть)
     return data
 
 
@@ -64,6 +64,7 @@ def _parse_item_story(raw: str) -> dict:
         raise ValueError("Отсутствует поле 'caption'")
     if not isinstance(data.get("features"), dict):
         raise ValueError("Отсутствует или невалидно поле 'features'")
+    # image_keywords — необязательное поле (новые промпты включают, старые — нет)
     return data
 
 
@@ -218,6 +219,16 @@ def _generate_text(db, item, project, brief) -> int:
         hashtags = []
     image_prompt: str | None = data.get("image_prompt") or None
 
+    # Ключевые слова для стокового поиска (2–4 английских слова)
+    # Приоритет: image_keywords из ответа LLM → первые 5 слов image_prompt → []
+    raw_keywords = data.get("image_keywords")
+    if isinstance(raw_keywords, list) and raw_keywords:
+        image_keywords: list[str] = [str(k) for k in raw_keywords if k]
+    elif image_prompt:
+        image_keywords = image_prompt.split()[:5]
+    else:
+        image_keywords = []
+
     # Для ручных платформ (instagram, dzen) конвертируем в plain text уже на этапе генерации
     # (ручная очередь копирует текст напрямую, без конверсии на этапе публикации)
     plain_text = md_to_plain(text)
@@ -255,18 +266,15 @@ def _generate_text(db, item, project, brief) -> int:
         )
         content_id = cur.lastrowid
 
-    # ── Картинка к посту (если LLM вернул image_prompt) ─────────────────────
-    if image_prompt:
+    # ── Картинка к посту (если есть image_prompt или image_keywords) ──────────
+    if image_prompt or image_keywords:
         try:
             media_dir = settings.data_dir_absolute / "media" / str(content_id)
             media_dir.mkdir(parents=True, exist_ok=True)
             image_path_obj = media_dir / "post.jpg"
 
-            if settings.FAKE_ASSETS:
-                _fake_image(image_path_obj)
-                ok = True
-            else:
-                ok = _fetch_pollinations_image([image_prompt], image_path_obj)
+            # fetch_image сам обрабатывает FAKE_ASSETS
+            ok = fetch_image(image_keywords if image_keywords else [image_prompt], image_path_obj)
 
             if ok:
                 files = {"image_path": str(image_path_obj.absolute())}
@@ -277,13 +285,13 @@ def _generate_text(db, item, project, brief) -> int:
                     )
             else:
                 logger.warning(
-                    "_generate_text: не удалось скачать картинку Pollinations "
+                    "_generate_text: все источники картинок исчерпаны "
                     "(content_id=%d) — пост без картинки",
                     content_id,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "_generate_text: ошибка при скачивании картинки (content_id=%d): %s "
+                "_generate_text: ошибка при получении картинки (content_id=%d): %s "
                 "— пост без картинки",
                 content_id, exc,
             )
@@ -324,6 +332,14 @@ def _generate_story(db, item, project, brief) -> int:
     overlay_text = data.get("overlay_text") or ""
     caption = data["caption"]
 
+    # Ключевые слова для стокового поиска (новые промпты включают image_keywords)
+    # Фоллбэк: первые 5 слов image_prompt
+    raw_story_keywords = data.get("image_keywords")
+    if isinstance(raw_story_keywords, list) and raw_story_keywords:
+        story_image_keywords: list[str] = [str(k) for k in raw_story_keywords if k]
+    else:
+        story_image_keywords = image_prompt.split()[:5]
+
     # ── Создать content СНАЧАЛА (нужен content_id для пути картинки) ──────────
     texts = {platform: {"caption": caption, "overlay_text": overlay_text}}
     with get_db() as wdb:
@@ -342,17 +358,18 @@ def _generate_story(db, item, project, brief) -> int:
         )
         content_id = cur.lastrowid
 
-    # ── Картинка Pollinations (или плейсхолдер при FAKE_ASSETS) ──────────────
+    # ── Картинка истории (единая цепочка: Pollinations → Pexels → Pixabay) ───
     media_dir = settings.data_dir_absolute / "media" / str(content_id)
     media_dir.mkdir(parents=True, exist_ok=True)
     image_path = media_dir / "story.jpg"
 
-    if settings.FAKE_ASSETS:
-        _fake_image(image_path)
-    else:
-        ok = _fetch_pollinations_image([image_prompt], image_path)
-        if not ok:
-            raise RuntimeError("Не удалось сгенерировать картинку истории (Pollinations)")
+    # fetch_image сам обрабатывает FAKE_ASSETS
+    ok = fetch_image(story_image_keywords, image_path)
+    if not ok:
+        raise RuntimeError(
+            "Не удалось получить картинку истории "
+            "(Pollinations/Pexels/Pixabay все недоступны)"
+        )
 
     files = {"image_path": str(image_path.absolute())}
     with get_db() as wdb:

@@ -44,6 +44,7 @@
   "text": "Полный готовый текст публикации (без markdown-разметки)",
   "hashtags": ["#тег1", "#тег2"],
   "image_prompt": "Detailed English prompt for image generation: style, objects, mood, no text on image",
+  "image_keywords": ["english", "keyword1", "keyword2", "keyword3"],
   "features": {
     "hook_type": "вопрос|факт|история|провокация",
     "topic": "основная тема",
@@ -52,5 +53,7 @@
     "ab_variant": "null"
   }
 }
+
+image_keywords — 2–4 коротких АНГЛИЙСКИХ слова для поиска стокового фото (без запятых и знаков препинания), отражающих тему поста. Например: ["business meeting", "laptop", "success"] или ["nature", "green forest"].
 
 Никакого текста вне JSON.

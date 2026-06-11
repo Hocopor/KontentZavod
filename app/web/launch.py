@@ -9,6 +9,7 @@
     POST /projects/{slug}/toggle-pause/{what} — инвертировать паузу plan/gen/autogen
 """
 import json
+import re
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
@@ -16,6 +17,12 @@ from fastapi.responses import HTMLResponse
 from app import catalog
 from app.db import get_db, get_project_settings, DEFAULT_PROJECT_SETTINGS
 from app.templates_env import templates
+
+# Допустимые голоса TTS
+_ALLOWED_TTS_VOICES = ("svetlana", "dmitry", "auto")
+
+# Regexp для HEX-цвета (#rrggbb)
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 router = APIRouter(prefix="/projects")
 
@@ -104,11 +111,31 @@ def _save_settings(db, project_id: int, form_data: dict) -> dict:
     project = db.execute("SELECT settings FROM projects WHERE id=?", (project_id,)).fetchone()
     cur_settings = get_project_settings(project["settings"] if project else None)
 
+    # --- голос TTS ---
+    tts_voice = str(form_data.get("tts_voice", "svetlana")).strip()
+    if tts_voice not in _ALLOWED_TTS_VOICES:
+        tts_voice = "svetlana"
+
+    # --- цвета субтитров ---
+    def _color(key: str, default: str) -> str:
+        val = str(form_data.get(key, default)).strip()
+        return val if _HEX_COLOR_RE.match(val) else default
+
+    sub_font_color      = _color("sub_font_color",      "#ffffff")
+    sub_outline_color   = _color("sub_outline_color",   "#000000")
+    sub_highlight_color = _color("sub_highlight_color", "#ffe600")
+    sub_outline_width   = _clamp(_int("sub_outline_width", 5), 1, 10)
+
     new_settings = {
         **cur_settings,
         "plan_horizon_days": plan_horizon_days,
         "gen_lookahead_days": gen_lookahead_days,
         "retention_days": retention_days,
+        "tts_voice": tts_voice,
+        "sub_font_color": sub_font_color,
+        "sub_outline_color": sub_outline_color,
+        "sub_highlight_color": sub_highlight_color,
+        "sub_outline_width": sub_outline_width,
     }
 
     db.execute(

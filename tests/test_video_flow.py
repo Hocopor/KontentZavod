@@ -278,7 +278,7 @@ class TestProduceVideo:
                 audios.append(SceneAudio(index=i, path=mp3, duration=1.2, words=words))
             return audios
 
-        def fake_build_ass(words, out_path, words_per_line=3):
+        def fake_build_ass(words, out_path, words_per_line=3, **kwargs):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text("[Script Info]\n", encoding="utf-8")
             return out_path
@@ -344,7 +344,7 @@ class TestProduceVideo:
                 audios.append(SceneAudio(index=i, path=mp3, duration=1.0, words=words))
             return audios
 
-        def fake_build_ass(words, out_path, words_per_line=3):
+        def fake_build_ass(words, out_path, words_per_line=3, **kwargs):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text("[Script Info]\n", encoding="utf-8")
             return out_path

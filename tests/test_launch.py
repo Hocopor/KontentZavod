@@ -723,3 +723,195 @@ class TestLaunchFlow:
             ).fetchone()
         assert strat["version"] == 3
         assert strat["status"] == "generating"
+
+
+# ─── 7. Озвучка и субтитры: новые настройки ──────────────────────────────────
+
+
+class TestVoiceAndSubtitlesSettings:
+    """Тесты сохранения и валидации настроек озвучки и субтитров."""
+
+    def _get_settings(self, slug: str) -> dict:
+        with get_db() as db:
+            row = db.execute("SELECT settings FROM projects WHERE slug=?", (slug,)).fetchone()
+        return get_project_settings(row["settings"])
+
+    def test_saves_voice_svetlana(self, client, patch_env):
+        """Голос 'svetlana' сохраняется."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "tts_voice": "svetlana",
+            },
+        )
+        assert resp.status_code == 200
+        s = self._get_settings(slug)
+        assert s["tts_voice"] == "svetlana"
+
+    def test_saves_voice_dmitry(self, client, patch_env):
+        """Голос 'dmitry' сохраняется."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "tts_voice": "dmitry",
+            },
+        )
+        assert resp.status_code == 200
+        s = self._get_settings(slug)
+        assert s["tts_voice"] == "dmitry"
+
+    def test_saves_voice_auto(self, client, patch_env):
+        """Голос 'auto' сохраняется."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "tts_voice": "auto",
+            },
+        )
+        assert resp.status_code == 200
+        s = self._get_settings(slug)
+        assert s["tts_voice"] == "auto"
+
+    def test_invalid_voice_falls_back_to_svetlana(self, client, patch_env):
+        """Мусорный голос → дефолт 'svetlana'."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "tts_voice": "hacker_voice",
+            },
+        )
+        assert resp.status_code == 200
+        s = self._get_settings(slug)
+        assert s["tts_voice"] == "svetlana"
+
+    def test_saves_subtitle_colors(self, client, patch_env):
+        """Корректные HEX-цвета субтитров сохраняются."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "sub_font_color": "#ff0000",
+                "sub_outline_color": "#00ff00",
+                "sub_highlight_color": "#0000ff",
+                "sub_outline_width": "7",
+            },
+        )
+        assert resp.status_code == 200
+        s = self._get_settings(slug)
+        assert s["sub_font_color"] == "#ff0000"
+        assert s["sub_outline_color"] == "#00ff00"
+        assert s["sub_highlight_color"] == "#0000ff"
+        assert s["sub_outline_width"] == 7
+
+    def test_invalid_hex_color_falls_back_to_default(self, client, patch_env):
+        """Мусорный HEX → дефолт (#ffffff)."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "sub_font_color": "not-a-color",
+                "sub_outline_color": "#zzzzzz",
+                "sub_outline_width": "5",
+            },
+        )
+        assert resp.status_code == 200
+        s = self._get_settings(slug)
+        assert s["sub_font_color"] == "#ffffff"   # дефолт
+        assert s["sub_outline_color"] == "#000000"  # дефолт
+
+    def test_outline_width_clamped_1_to_10(self, client, patch_env):
+        """Толщина обрамления clamp'ится к [1, 10]."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "sub_outline_width": "999",
+            },
+        )
+        assert resp.status_code == 200
+        s = self._get_settings(slug)
+        assert s["sub_outline_width"] == 10
+
+    def test_default_settings_have_new_fields(self, client, patch_env):
+        """Новый проект получает дефолтные значения для tts_voice и sub_*."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        s = self._get_settings(slug)
+        assert s["tts_voice"] == "svetlana"
+        assert s["sub_font_color"] == "#ffffff"
+        assert s["sub_outline_color"] == "#000000"
+        assert s["sub_outline_width"] == 5
+        assert s["sub_highlight_color"] == "#ffe600"
+
+    def test_ui_shows_voice_select(self, client, patch_env):
+        """Форма настроек содержит select голоса."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.get(f"/projects/{slug}/launch-panel")
+        assert resp.status_code == 200
+        assert "tts_voice" in resp.text
+        assert "Светлана" in resp.text
+        assert "Дмитрий" in resp.text
+
+    def test_ui_shows_color_inputs(self, client, patch_env):
+        """Форма содержит color-инпуты субтитров."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.get(f"/projects/{slug}/launch-panel")
+        assert resp.status_code == 200
+        assert "sub_font_color" in resp.text
+        assert "sub_outline_color" in resp.text
+        assert "sub_highlight_color" in resp.text
+        assert "sub_outline_width" in resp.text

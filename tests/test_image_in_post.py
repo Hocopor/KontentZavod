@@ -3,6 +3,7 @@
 
 Проверяет, что после генерации text-поста через from_plan._generate_text
 в content.files сохраняется image_path и файл существует на диске.
+Также проверяет, что image_keywords из ответа LLM используются для поиска картинки.
 """
 import json
 from pathlib import Path
@@ -97,10 +98,10 @@ def test_text_post_has_image_path(db_with_project):
 
 
 def test_text_post_without_image_prompt_skips_image(db_with_project, monkeypatch):
-    """Если LLM не вернул image_prompt, content.files = NULL (пост без картинки)."""
+    """Если LLM не вернул image_prompt и image_keywords, content.files = NULL (пост без картинки)."""
     item_id = db_with_project["item_id"]
 
-    # Патчим chat так, чтобы не возвращал image_prompt
+    # Патчим chat так, чтобы не возвращал image_prompt и image_keywords
     import app.pipeline.from_plan as fp_module
     import json as _json
 
@@ -117,7 +118,7 @@ def test_text_post_without_image_prompt_skips_image(db_with_project, monkeypatch
                     "format": "text",
                     "ab_variant": "null",
                 },
-                # image_prompt НЕ включён
+                # image_prompt и image_keywords НЕ включены
             }, ensure_ascii=False)
         return "FAKE_LLM response"
 
@@ -136,7 +137,106 @@ def test_text_post_without_image_prompt_skips_image(db_with_project, monkeypatch
             "SELECT * FROM content WHERE id=?", (item["content_id"],)
         ).fetchone()
 
-    # Без image_prompt files должен быть NULL
+    # Без image_prompt и image_keywords files должен быть NULL
     assert content["files"] is None or content["files"] == "", (
         f"Ожидался NULL files, получили: {content['files']}"
+    )
+
+
+def test_text_post_uses_image_keywords(db_with_project, monkeypatch):
+    """LLM вернул image_keywords → fetch_image вызывается с этими ключевыми словами."""
+    item_id = db_with_project["item_id"]
+
+    import app.pipeline.from_plan as fp_module
+    import app.pipeline.assets as assets_mod
+    import json as _json
+
+    fetch_image_calls = []
+
+    def mock_fetch_image(keywords, dest):
+        fetch_image_calls.append(keywords)
+        # Имитируем FAKE_ASSETS: создаём файл
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 10)
+        return True
+
+    def chat_with_keywords(messages, purpose=None, **kwargs):
+        if purpose == "item_post":
+            return _json.dumps({
+                "title": "Тест с keywords",
+                "text": "Текст с image_keywords",
+                "hashtags": [],
+                "image_prompt": "business analytics dashboard modern office",
+                "image_keywords": ["business", "analytics", "office"],
+                "features": {
+                    "hook_type": "факт",
+                    "topic": "тест",
+                    "length": "short",
+                    "format": "text",
+                    "ab_variant": "null",
+                },
+            }, ensure_ascii=False)
+        return "FAKE_LLM response"
+
+    monkeypatch.setattr(fp_module, "chat", chat_with_keywords)
+    monkeypatch.setattr(fp_module, "fetch_image", mock_fetch_image)
+
+    process_factory()
+
+    with get_db() as db:
+        item = db.execute(
+            "SELECT * FROM plan_items WHERE id=?", (item_id,)
+        ).fetchone()
+
+    assert item["status"] == "generated"
+
+    # fetch_image должен был вызваться с image_keywords, а не с image_prompt
+    assert len(fetch_image_calls) == 1, f"fetch_image вызван {len(fetch_image_calls)} раз"
+    assert fetch_image_calls[0] == ["business", "analytics", "office"], (
+        f"Ожидались image_keywords, получили: {fetch_image_calls[0]}"
+    )
+
+
+def test_text_post_keywords_fallback_to_image_prompt_words(db_with_project, monkeypatch):
+    """Нет image_keywords → фоллбэк: первые 5 слов image_prompt."""
+    item_id = db_with_project["item_id"]
+
+    import app.pipeline.from_plan as fp_module
+    import json as _json
+
+    fetch_image_calls = []
+
+    def mock_fetch_image(keywords, dest):
+        fetch_image_calls.append(keywords)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 10)
+        return True
+
+    def chat_no_keywords(messages, purpose=None, **kwargs):
+        if purpose == "item_post":
+            return _json.dumps({
+                "title": "Тест без keywords",
+                "text": "Текст без image_keywords",
+                "hashtags": [],
+                "image_prompt": "word1 word2 word3 word4 word5 word6 word7",
+                # image_keywords отсутствует
+                "features": {
+                    "hook_type": "факт",
+                    "topic": "тест",
+                    "length": "short",
+                    "format": "text",
+                    "ab_variant": "null",
+                },
+            }, ensure_ascii=False)
+        return "FAKE_LLM response"
+
+    monkeypatch.setattr(fp_module, "chat", chat_no_keywords)
+    monkeypatch.setattr(fp_module, "fetch_image", mock_fetch_image)
+
+    process_factory()
+
+    assert len(fetch_image_calls) == 1
+    # Фоллбэк: первые 5 слов image_prompt
+    assert fetch_image_calls[0] == ["word1", "word2", "word3", "word4", "word5"], (
+        f"Фоллбэк должен давать первые 5 слов image_prompt: {fetch_image_calls[0]}"
     )

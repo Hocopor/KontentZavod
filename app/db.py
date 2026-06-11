@@ -32,6 +32,13 @@ DEFAULT_PROJECT_SETTINGS: dict = {
     "plan_paused": 0,
     "gen_paused": 0,
     "autogen": 0,
+    # Озвучка: tts_voice — "svetlana" | "dmitry" | "auto" (как решил LLM)
+    "tts_voice": "svetlana",
+    # Субтитры: цвета в HEX (#rrggbb) и толщина обрамления
+    "sub_font_color": "#ffffff",
+    "sub_outline_color": "#000000",
+    "sub_outline_width": 5,
+    "sub_highlight_color": "#ffe600",
 }
 
 # ─── Инициализация ────────────────────────────────────────────────────────────

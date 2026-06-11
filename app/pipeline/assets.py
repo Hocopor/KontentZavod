@@ -5,6 +5,13 @@
   video_footage  — вертикальные видеофутажи (Pexels Videos → Pixabay Videos → картинка)
   video_slideshow — статичные картинки через Pollinations.ai (без ключа)
 
+Картинки для постов и историй:
+  fetch_image(keywords, dest) — единая цепочка:
+    1. Pollinations.ai (если POLLINATIONS_TOKEN задан)
+    2. Pexels Photos API
+    3. Pixabay Photos API
+    4. False
+
 FAKE_ASSETS=1 → плейсхолдеры через ffmpeg lavfi без сети.
 
 Прокси-фейловер (для РФ-серверов):
@@ -34,7 +41,9 @@ class AssetsError(Exception):
 # ─── Константы ─────────────────────────────────────────────────────────────────
 
 _PEXELS_VIDEO_URL = "https://api.pexels.com/videos/search"
+_PEXELS_PHOTO_URL = "https://api.pexels.com/v1/search"
 _PIXABAY_VIDEO_URL = "https://pixabay.com/api/videos/"
+_PIXABAY_PHOTO_URL = "https://pixabay.com/api/"
 _POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"
 
 _TIMEOUT = 60
@@ -377,6 +386,157 @@ def _fetch_pollinations_image(keywords: list[str], dest: Path) -> bool:
     return False
 
 
+# ─── Pexels Photos ────────────────────────────────────────────────────────────
+
+
+def _fetch_pexels_photo(query: str, dest: Path) -> bool:
+    """
+    Поиск вертикального фото на Pexels Photos API.
+
+    Порядок предпочтения URL: src.portrait → src.large2x.
+    Возвращает True при успехе.
+    """
+    api_key = settings.PEXELS_API_KEY
+    if not api_key:
+        logger.warning("_fetch_pexels_photo: PEXELS_API_KEY не задан — пропускаем")
+        return False
+
+    try:
+        resp = _http_get(
+            _PEXELS_PHOTO_URL,
+            headers={"Authorization": api_key},
+            params={"query": query, "orientation": "portrait", "per_page": 5},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Pexels Photos API ошибка: %s", exc)
+        return False
+
+    photos = data.get("photos", [])
+    if not photos:
+        logger.info("Pexels Photos: нет результатов по запросу '%s'", query)
+        return False
+
+    for photo in photos:
+        src = photo.get("src") or {}
+        url = src.get("portrait") or src.get("large2x")
+        if not url:
+            continue
+        try:
+            _download_stream(url, dest)
+            logger.info("Pexels Photos: скачано фото '%s' → %s", query, dest.name)
+            return True
+        except Exception as exc:
+            logger.warning("Pexels Photos: ошибка скачивания: %s", exc)
+            continue
+
+    return False
+
+
+# ─── Pixabay Photos ───────────────────────────────────────────────────────────
+
+
+def _fetch_pixabay_photo(query: str, dest: Path) -> bool:
+    """
+    Поиск вертикального фото на Pixabay Photos API.
+
+    Использует largeImageURL из ответа API.
+    Возвращает True при успехе.
+    """
+    api_key = settings.PIXABAY_API_KEY
+    if not api_key:
+        logger.warning("_fetch_pixabay_photo: PIXABAY_API_KEY не задан — пропускаем")
+        return False
+
+    try:
+        resp = _http_get(
+            _PIXABAY_PHOTO_URL,
+            params={
+                "key": api_key,
+                "q": query,
+                "orientation": "vertical",
+                "image_type": "photo",
+                "per_page": 5,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Pixabay Photos API ошибка: %s", exc)
+        return False
+
+    hits = data.get("hits", [])
+    if not hits:
+        logger.info("Pixabay Photos: нет результатов по запросу '%s'", query)
+        return False
+
+    for hit in hits:
+        url = hit.get("largeImageURL")
+        if not url:
+            continue
+        try:
+            _download_stream(url, dest)
+            logger.info("Pixabay Photos: скачано фото '%s' → %s", query, dest.name)
+            return True
+        except Exception as exc:
+            logger.warning("Pixabay Photos: ошибка скачивания: %s", exc)
+            continue
+
+    return False
+
+
+# ─── Единая цепочка получения картинки ───────────────────────────────────────
+
+
+def fetch_image(keywords: list[str], dest: Path) -> bool:
+    """
+    Получить картинку для поста или истории по ключевым словам.
+
+    Цепочка попыток:
+      1. Pollinations.ai — только если POLLINATIONS_TOKEN задан (платный/токен тир).
+      2. Pexels Photos (portrait, бесплатно).
+      3. Pixabay Photos (vertical, бесплатно).
+      4. False — картинка недоступна.
+
+    При FAKE_ASSETS=1 — создаёт плейсхолдер через ffmpeg и возвращает True.
+
+    Параметры:
+        keywords — список англоязычных слов для поиска/промпта.
+        dest     — путь к целевому файлу (.jpg).
+
+    Возвращает True при успехе, False если ни один источник не сработал.
+    """
+    # FAKE-режим
+    if settings.FAKE_ASSETS:
+        _fake_image(dest)
+        return True
+
+    query = " ".join(keywords) if keywords else "abstract background"
+
+    # 1. Pollinations (только если токен задан — иначе 402 со всех IP)
+    if settings.POLLINATIONS_TOKEN:
+        if _fetch_pollinations_image(keywords, dest):
+            logger.info("fetch_image: картинка получена через Pollinations (query='%s')", query)
+            return True
+        logger.info("fetch_image: Pollinations не сработал, пробую Pexels Photos")
+
+    # 2. Pexels Photos
+    if _fetch_pexels_photo(query, dest):
+        logger.info("fetch_image: картинка получена через Pexels Photos (query='%s')", query)
+        return True
+
+    # 3. Pixabay Photos
+    if _fetch_pixabay_photo(query, dest):
+        logger.info("fetch_image: картинка получена через Pixabay Photos (query='%s')", query)
+        return True
+
+    logger.warning(
+        "fetch_image: все источники исчерпаны для query='%s' → картинка недоступна", query
+    )
+    return False
+
+
 # ─── Основная функция ─────────────────────────────────────────────────────────
 
 
@@ -434,7 +594,7 @@ def fetch_scene_assets(
                 "Сцена %d: видеофутаж не найден, фоллбэк на картинку (Ken Burns)", idx + 1
             )
             dest_jpg = assets_dir / _scene_filename(idx, "jpg")
-            if _fetch_pollinations_image(keywords, dest_jpg):
+            if fetch_image(keywords, dest_jpg):
                 result.append(dest_jpg)
                 continue
 
@@ -443,11 +603,11 @@ def fetch_scene_assets(
                 f"(query='{query}', template='{template}')"
             )
 
-        # ── video_slideshow: только картинка Pollinations ────────────────────
+        # ── video_slideshow: картинка через единую цепочку ──────────────────
         elif template == "video_slideshow":
             dest_jpg = assets_dir / _scene_filename(idx, "jpg")
 
-            if _fetch_pollinations_image(keywords, dest_jpg):
+            if fetch_image(keywords, dest_jpg):
                 result.append(dest_jpg)
                 continue
 

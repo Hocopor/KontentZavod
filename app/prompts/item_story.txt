@@ -36,6 +36,7 @@
 {
   "title": "Заголовок истории",
   "image_prompt": "english prompt for a vertical 9:16 image, no text",
+  "image_keywords": ["english", "keyword1", "keyword2"],
   "overlay_text": "Короткая фраза на картинку",
   "caption": "Подпись к истории с CTA",
   "features": {
@@ -46,5 +47,7 @@
     "ab_variant": "null"
   }
 }
+
+image_keywords — 2–4 коротких АНГЛИЙСКИХ слова для поиска стокового фото (без знаков препинания), отражающих визуальную тему истории. Например: ["digital marketing", "growth"] или ["coffee", "morning routine"].
 
 Никакого текста вне JSON.

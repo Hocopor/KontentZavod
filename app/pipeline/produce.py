@@ -28,7 +28,7 @@ import logging
 from pathlib import Path
 
 from app.config import settings
-from app.db import get_db
+from app.db import get_db, get_project_settings
 from app.pipeline.tts import synthesize_scenes
 from app.pipeline.subtitles import build_ass
 from app.pipeline.assets import fetch_scene_assets, pick_music
@@ -110,8 +110,33 @@ def produce_video(content_id: int) -> None:
 
     video_block = texts.get("video", {})
     scenes = video_block.get("scenes", [])
-    voice = video_block.get("voice", "dmitry")
     mood = video_block.get("mood", "neutral")
+
+    # ── 2a. Настройки проекта (голос + стиль субтитров) ──────────────────────
+    with get_db() as db:
+        project_row = db.execute(
+            "SELECT settings FROM projects WHERE id=?", (row["project_id"],)
+        ).fetchone()
+    proj_settings = get_project_settings(project_row["settings"] if project_row else None)
+
+    # Голос: из настроек проекта; "auto" → как решил LLM (video_block.voice)
+    tts_voice_setting = proj_settings.get("tts_voice", "svetlana")
+    _allowed_voices = ("svetlana", "dmitry", "auto")
+    if tts_voice_setting not in _allowed_voices:
+        tts_voice_setting = "svetlana"
+
+    if tts_voice_setting == "auto":
+        # LLM может вернуть "dmitry" или "svetlana", иначе дефолт svetlana
+        llm_voice = video_block.get("voice", "svetlana")
+        voice = llm_voice if llm_voice in ("dmitry", "svetlana") else "svetlana"
+    else:
+        voice = tts_voice_setting
+
+    # Стиль субтитров из настроек проекта
+    sub_font_color      = proj_settings.get("sub_font_color", "#ffffff")
+    sub_outline_color   = proj_settings.get("sub_outline_color", "#000000")
+    sub_outline_width   = int(proj_settings.get("sub_outline_width", 5))
+    sub_highlight_color = proj_settings.get("sub_highlight_color", "#ffe600")
 
     scene_texts = [s["text"] for s in scenes]
 
@@ -129,7 +154,13 @@ def produce_video(content_id: int) -> None:
         for sa in scene_audios:
             all_words.extend(sa.words)
         subs_path = media_dir / "subs.ass"
-        build_ass(all_words, subs_path)
+        build_ass(
+            all_words, subs_path,
+            font_color=sub_font_color,
+            outline_color=sub_outline_color,
+            outline_width=sub_outline_width,
+            highlight_color=sub_highlight_color,
+        )
         logger.info("produce_video: content_id=%d → субтитры построены", content_id)
 
         # 3c. Ассеты

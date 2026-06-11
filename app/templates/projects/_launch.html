@@ -76,6 +76,107 @@
         </div>
         {% endif %}
 
+        {# ── Озвучка и субтитры ── #}
+        <div class="section-title">🎬 Озвучка и субтитры</div>
+
+        {# Выбор голоса с кнопкой прослушать #}
+        <div class="flex-center gap-md mb-2" style="flex-wrap:wrap; align-items:flex-end;">
+            <div class="form-group" style="margin-bottom:0; flex:1; min-width:200px;">
+                <label for="tts_voice_{{ project.slug }}">Голос озвучки</label>
+                <select id="tts_voice_{{ project.slug }}" name="tts_voice" style="width:100%;">
+                    <option value="svetlana" {% if settings.tts_voice == 'svetlana' %}selected{% endif %}>Светлана (женский)</option>
+                    <option value="dmitry"   {% if settings.tts_voice == 'dmitry'   %}selected{% endif %}>Дмитрий (мужской)</option>
+                    <option value="auto"     {% if settings.tts_voice == 'auto'     %}selected{% endif %}>Автовыбор ИИ</option>
+                </select>
+            </div>
+            <div style="padding-bottom:.1rem;">
+                <button type="button" class="btn btn-secondary btn-sm"
+                        onclick="(function(){
+                            var sel = document.getElementById('tts_voice_{{ project.slug }}');
+                            var v = sel.value;
+                            if (v === 'auto') { v = 'svetlana'; }
+                            var aud = document.getElementById('voice-preview-{{ project.slug }}');
+                            aud.src = '/tts/preview/' + v + '?t=' + Date.now();
+                            aud.style.display = 'inline-block';
+                            aud.load(); aud.play();
+                        })()">
+                    ▶ Прослушать
+                </button>
+                <audio id="voice-preview-{{ project.slug }}" style="display:none; vertical-align:middle; height:32px;" controls></audio>
+            </div>
+        </div>
+
+        {# Настройки субтитров #}
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:1rem; margin-bottom:1rem;">
+            <div class="form-group" style="margin-bottom:0;">
+                <label for="sub_font_color_{{ project.slug }}">Цвет шрифта</label>
+                <input type="color" id="sub_font_color_{{ project.slug }}" name="sub_font_color"
+                       value="{{ settings.sub_font_color }}"
+                       oninput="updateSubPreview('{{ project.slug }}')" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+                <label for="sub_outline_color_{{ project.slug }}">Цвет обрамления</label>
+                <input type="color" id="sub_outline_color_{{ project.slug }}" name="sub_outline_color"
+                       value="{{ settings.sub_outline_color }}"
+                       oninput="updateSubPreview('{{ project.slug }}')" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+                <label for="sub_highlight_color_{{ project.slug }}">Подсветка слова</label>
+                <input type="color" id="sub_highlight_color_{{ project.slug }}" name="sub_highlight_color"
+                       value="{{ settings.sub_highlight_color }}"
+                       oninput="updateSubPreview('{{ project.slug }}')" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+                <label for="sub_outline_width_{{ project.slug }}">Толщина обрамления (1–10)</label>
+                <input type="number" id="sub_outline_width_{{ project.slug }}" name="sub_outline_width"
+                       value="{{ settings.sub_outline_width }}" min="1" max="10"
+                       oninput="updateSubPreview('{{ project.slug }}')" />
+            </div>
+        </div>
+
+        {# Живой предпросмотр субтитров #}
+        <div id="sub-preview-{{ project.slug }}"
+             style="background:#111; border-radius:8px; padding:1.5rem; text-align:center; margin-bottom:1.25rem; min-height:80px; display:flex; align-items:center; justify-content:center;">
+            <span id="sub-preview-text-{{ project.slug }}" style="
+                font-family:Arial, sans-serif;
+                font-size:1.6rem;
+                font-weight:bold;
+                color:{{ settings.sub_font_color }};
+                text-shadow: {{ settings.sub_outline_width }}px 0 0 {{ settings.sub_outline_color }},
+                             -{{ settings.sub_outline_width }}px 0 0 {{ settings.sub_outline_color }},
+                             0 {{ settings.sub_outline_width }}px 0 {{ settings.sub_outline_color }},
+                             0 -{{ settings.sub_outline_width }}px 0 {{ settings.sub_outline_color }},
+                             {{ settings.sub_outline_width }}px {{ settings.sub_outline_width }}px 0 {{ settings.sub_outline_color }},
+                             -{{ settings.sub_outline_width }}px {{ settings.sub_outline_width }}px 0 {{ settings.sub_outline_color }},
+                             {{ settings.sub_outline_width }}px -{{ settings.sub_outline_width }}px 0 {{ settings.sub_outline_color }},
+                             -{{ settings.sub_outline_width }}px -{{ settings.sub_outline_width }}px 0 {{ settings.sub_outline_color }};
+            "><span id="sub-preview-word1-{{ project.slug }}" style="color:{{ settings.sub_highlight_color }}">Так</span> будут выглядеть субтитры</span>
+        </div>
+
+        <script>
+        function updateSubPreview(slug) {
+            var fontColor      = document.getElementById('sub_font_color_'      + slug).value;
+            var outlineColor   = document.getElementById('sub_outline_color_'   + slug).value;
+            var highlightColor = document.getElementById('sub_highlight_color_' + slug).value;
+            var outlineWidth   = parseInt(document.getElementById('sub_outline_width_' + slug).value) || 5;
+            var w = outlineWidth;
+            var shadow = [
+                w+'px 0 0 '+outlineColor,
+                '-'+w+'px 0 0 '+outlineColor,
+                '0 '+w+'px 0 '+outlineColor,
+                '0 -'+w+'px 0 '+outlineColor,
+                w+'px '+w+'px 0 '+outlineColor,
+                '-'+w+'px '+w+'px 0 '+outlineColor,
+                w+'px -'+w+'px 0 '+outlineColor,
+                '-'+w+'px -'+w+'px 0 '+outlineColor
+            ].join(', ');
+            var span = document.getElementById('sub-preview-text-' + slug);
+            span.style.color = fontColor;
+            span.style.textShadow = shadow;
+            document.getElementById('sub-preview-word1-' + slug).style.color = highlightColor;
+        }
+        </script>
+
         {# Числовые настройки #}
         <div class="section-title">Параметры генерации</div>
         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1rem; margin-bottom:1.25rem;">
