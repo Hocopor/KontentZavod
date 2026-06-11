@@ -8,6 +8,13 @@
     <div>
         <div class="flex-center gap-sm mb-1">
             <h1 style="margin-bottom:0;">{{ project.name }}</h1>
+            {% if project.stage == 'running' %}
+            <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green); font-size:.82rem;">В работе</span>
+            {% elif project.stage == 'paused' %}
+            <span class="badge" style="background:rgba(245,158,11,.15);color:var(--yellow); font-size:.82rem;">Пауза</span>
+            {% else %}
+            <span class="badge" style="background:rgba(148,163,184,.1);color:var(--text2); font-size:.82rem;">Черновик</span>
+            {% endif %}
             {% if project.status == 'archived' %}
             <span class="badge" style="background:rgba(148,163,184,.15);color:var(--text2);">архив</span>
             {% endif %}
@@ -36,90 +43,61 @@
 <div class="alert alert-error">{{ delete_error }}</div>
 {% endif %}
 
-<!-- Заполненность профиля -->
-<div class="card mb-2">
-    <div class="flex-center gap-sm" style="justify-content:space-between; margin-bottom:.5rem;">
-        <span class="text-sm">Заполненность профиля</span>
+<!-- 1. Профиль -->
+<details class="card mb-2" {% if completeness < 80 %}open{% endif %}>
+    <summary style="cursor:pointer; display:flex; align-items:center; gap:.75rem; list-style:none; user-select:none;">
+        <span style="font-weight:600; font-size:1rem;">1. Профиль</span>
         <span class="text-sm" style="color:{% if completeness >= 75 %}var(--green){% elif completeness >= 40 %}var(--yellow){% else %}var(--red){% endif %}; font-weight:600;">{{ completeness }}%</span>
-    </div>
-    <div class="progress-bar-wrap">
-        <div class="progress-bar" style="width:{{ completeness }}%; background:{% if completeness >= 75 %}var(--green){% elif completeness >= 40 %}var(--yellow){% else %}var(--red){% endif %};"></div>
-    </div>
-    {% if completeness < 100 %}
-    <div class="text-sm text-muted mt-1">Чем подробнее профиль — тем точнее и релевантнее генерирует ИИ.</div>
-    {% endif %}
-</div>
+        <a href="/projects/{{ project.slug }}/edit" class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="event.stopPropagation()">Редактировать</a>
+    </summary>
 
-<!-- Профиль проекта -->
-<div class="card mb-2">
-    <h2>Профиль проекта</h2>
+    <div style="margin-top:1rem;">
+        <!-- Прогресс-бар -->
+        <div class="progress-bar-wrap" style="margin-bottom:.75rem;">
+            <div class="progress-bar" style="width:{{ completeness }}%; background:{% if completeness >= 75 %}var(--green){% elif completeness >= 40 %}var(--yellow){% else %}var(--red){% endif %};"></div>
+        </div>
+        {% if completeness < 100 %}
+        <div class="text-sm text-muted mb-1">Чем подробнее профиль — тем точнее генерирует ИИ.</div>
+        {% endif %}
 
-    {% macro field(label, value, placeholder="") %}
-    <div class="mb-1">
-        <div class="text-sm text-muted" style="margin-bottom:.2rem;">{{ label }}</div>
-        <div class="text-sm">{% if value %}{{ value }}{% else %}<span style="color:var(--border); font-style:italic;">{{ placeholder if placeholder else 'не заполнено' }}</span>{% endif %}</div>
-    </div>
-    {% endmacro %}
+        {% macro field(label, value, placeholder="") %}
+        <div class="mb-1">
+            <div class="text-sm text-muted" style="margin-bottom:.2rem;">{{ label }}</div>
+            <div class="text-sm">{% if value %}{{ value }}{% else %}<span style="color:var(--border); font-style:italic;">{{ placeholder if placeholder else 'не заполнено' }}</span>{% endif %}</div>
+        </div>
+        {% endmacro %}
 
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:.75rem 2rem;">
-        {{ field("Описание", project.description, "не заполнено — важно для генерации!") }}
-        {{ field("Целевая аудитория", project.audience, "не заполнено — важно!") }}
-        {{ field("Тон голоса", project.tone) }}
-        {{ field("Цель продвижения", project.goals) }}
-        {{ field("CTA", project.cta) }}
-        {{ field("Тематики", project.themes) }}
-    </div>
-    {% if project.forbidden %}
-    <div class="mt-1">
-        <div class="text-sm text-muted mb-1">Стоп-темы</div>
-        <div class="text-sm">{{ project.forbidden }}</div>
-    </div>
-    {% endif %}
-    {% if project.links %}
-    <div class="mt-1">
-        <div class="text-sm text-muted mb-1">Ссылки</div>
-        <div class="text-sm" style="font-family:monospace; color:var(--accent2);">{{ project.links }}</div>
-    </div>
-    {% endif %}
-    {% if project.extra %}
-    <div class="mt-1">
-        <div class="text-sm text-muted mb-1">Доп. контекст</div>
-        <div class="text-sm">{{ project.extra }}</div>
-    </div>
-    {% endif %}
-</div>
-
-<!-- Идеи -->
-<div id="ideas-section" class="mb-2">
-    <div class="flex-center gap-md mb-2" style="justify-content:space-between;">
-        <h2 style="margin-bottom:0;" id="ideas">Идеи</h2>
-        {% if project.status == 'active' %}
-        <button class="btn btn-primary btn-sm"
-                hx-post="/projects/{{ project.slug }}/ideas/generate"
-                hx-target="#ideas-list"
-                hx-swap="innerHTML"
-                hx-indicator="#ideas-spinner"
-                onclick="this.disabled=true; this.textContent='Генерирую…'; setTimeout(() => { this.disabled=false; this.textContent='Сгенерировать идеи'; }, 15000)">
-            Сгенерировать идеи
-        </button>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:.75rem 2rem;">
+            {{ field("Описание", project.description, "не заполнено — важно для генерации!") }}
+            {{ field("Целевая аудитория", project.audience, "не заполнено — важно!") }}
+            {{ field("Тон голоса", project.tone) }}
+            {{ field("Цель продвижения", project.goals) }}
+            {{ field("CTA", project.cta) }}
+            {{ field("Тематики", project.themes) }}
+        </div>
+        {% if project.forbidden %}
+        <div class="mt-1">
+            <div class="text-sm text-muted mb-1">Стоп-темы</div>
+            <div class="text-sm">{{ project.forbidden }}</div>
+        </div>
+        {% endif %}
+        {% if project.links %}
+        <div class="mt-1">
+            <div class="text-sm text-muted mb-1">Ссылки</div>
+            <div class="text-sm" style="font-family:monospace; color:var(--accent2);">{{ project.links }}</div>
+        </div>
+        {% endif %}
+        {% if project.extra %}
+        <div class="mt-1">
+            <div class="text-sm text-muted mb-1">Доп. контекст</div>
+            <div class="text-sm">{{ project.extra }}</div>
+        </div>
         {% endif %}
     </div>
+</details>
 
-    <!-- Индикатор загрузки (htmx) -->
-    <div id="ideas-spinner" class="htmx-indicator alert alert-info text-sm mb-2"
-         style="display:none;">
-        ⏳ Генерирую идеи, подождите…
-    </div>
-
-    <div class="card" style="padding:1rem;">
-        <div id="ideas-list">
-            {% include "projects/_ideas_list.html" %}
-        </div>
-    </div>
-</div>
-
-<!-- Площадки -->
-<h2>Площадки</h2>
+<!-- 2. Площадки -->
+<div class="mb-1" style="font-weight:600; font-size:1rem; padding:.25rem 0;">2. Площадки</div>
 
 {% for pl in platforms %}
 <details class="card mb-1" {% if pl.enabled %}open{% endif %}>
@@ -253,6 +231,15 @@
 </details>
 {% endfor %}
 
+<!-- 3. Запуск завода -->
+<div class="mb-1" style="font-weight:600; font-size:1rem; padding:.25rem 0;">3. Запуск завода</div>
 <div id="launch-panel" hx-get="/projects/{{ project.slug }}/launch-panel" hx-trigger="load"></div>
+
+{% if project.stage == 'running' %}
+<div class="flex gap-sm mt-2" style="flex-wrap:wrap;">
+    <a href="/plan?project={{ project.slug }}" class="btn btn-primary">→ Контент-план</a>
+    <a href="/queue?project={{ project.slug }}" class="btn btn-primary">→ Публикация</a>
+</div>
+{% endif %}
 
 {% endblock %}

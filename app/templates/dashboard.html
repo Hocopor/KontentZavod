@@ -1,52 +1,58 @@
 {% extends "base.html" %}
 
-{% block title %}Дашборд — КонтентЗавод{% endblock %}
+{% block title %}Главная — КонтентЗавод{% endblock %}
 
 {% block content %}
-<h1>Дашборд</h1>
+<h1>Главная</h1>
+
+{% if not scheduler_enabled %}
+<div class="alert alert-warning">
+    &#9888; Автопубликация выключена (ENABLE_SCHEDULER=0) — запланированный контент не будет отправляться.
+</div>
+{% endif %}
 
 <div class="stats-grid">
     <div class="stat-card">
         <a href="/projects" style="text-decoration:none;">
-            <div class="stat-num">{{ projects_total }}</div>
-            <div class="stat-label">Активных проектов</div>
+            <div class="stat-num" style="{% if projects_running > 0 %}color:var(--green);{% endif %}">{{ projects_running }}</div>
+            <div class="stat-label">Проектов в работе</div>
         </a>
     </div>
     <div class="stat-card">
-        <a href="/review" style="text-decoration:none;">
-            <div class="stat-num" style="{% if review_count > 0 %}color:var(--yellow);{% endif %}">{{ review_count }}</div>
-            <div class="stat-label">На ревью</div>
+        <a href="/plan" style="text-decoration:none;">
+            <div class="stat-num" style="{% if plan_proposed > 0 %}color:var(--yellow);{% endif %}">{{ plan_proposed }}</div>
+            <div class="stat-label">Ждут одобрения</div>
         </a>
     </div>
     <div class="stat-card">
-        <a href="/calendar" style="text-decoration:none;">
-            <div class="stat-num" style="{% if approved_unscheduled > 0 %}color:var(--accent2);{% endif %}">{{ approved_unscheduled }}</div>
-            <div class="stat-label">Готово к планированию</div>
+        <a href="/queue" style="text-decoration:none;">
+            <div class="stat-num" style="{% if items_generated > 0 %}color:var(--accent2);{% endif %}">{{ items_generated }}</div>
+            <div class="stat-label">Готово к публикации</div>
         </a>
     </div>
     <div class="stat-card">
-        <a href="/calendar" style="text-decoration:none;">
-            <div class="stat-num">{{ scheduled_7d }}</div>
-            <div class="stat-label">Запланировано (7 дней)</div>
+        <a href="/queue" style="text-decoration:none;">
+            <div class="stat-num">{{ published_7d }}</div>
+            <div class="stat-label">Опубликовано за 7 дней</div>
         </a>
     </div>
     <div class="stat-card">
-        <a href="/calendar" style="text-decoration:none;">
-            <div class="stat-num" style="{% if errors_total > 0 %}color:var(--red);{% endif %}">{{ errors_total }}</div>
-            <div class="stat-label">Ошибок публикации</div>
-        </a>
-    </div>
-    <div class="stat-card">
-        <a href="/manual" style="text-decoration:none;">
+        <a href="/queue" style="text-decoration:none;">
             <div class="stat-num" style="{% if manual_count > 0 %}color:#f97316;{% endif %}">{{ manual_count }}</div>
-            <div class="stat-label">В ручной очереди</div>
+            <div class="stat-label">Ручная публикация</div>
+        </a>
+    </div>
+    <div class="stat-card">
+        <a href="/queue" style="text-decoration:none;">
+            <div class="stat-num" style="{% if errors_total > 0 %}color:var(--red);{% endif %}">{{ errors_total }}</div>
+            <div class="stat-label">Ошибки</div>
         </a>
     </div>
 </div>
 
 {% if last_errors %}
 <div class="card">
-    <h2>Последние ошибки публикации</h2>
+    <h2>Последние ошибки</h2>
     <div style="display:grid;gap:.5rem;margin-top:.75rem;">
         {% for e in last_errors %}
         <div style="display:flex;align-items:flex-start;gap:.75rem;padding:.6rem .75rem;
@@ -64,18 +70,16 @@
                     {{ e.error_text or 'Нет описания ошибки' }}
                 </div>
             </div>
-            <a href="/calendar/entry/{{ e.id }}" class="btn btn-secondary btn-sm"
-               style="white-space:nowrap;flex-shrink:0;">Детали</a>
         </div>
         {% endfor %}
     </div>
 </div>
 {% endif %}
 
-{% if projects_total == 0 %}
+{% if projects_running == 0 %}
 <div class="alert alert-info mt-2">
-    Начните с создания первого проекта —
-    <a href="/projects/new" style="color:var(--accent2);font-weight:600;">добавить проект</a>.
+    Нет активных проектов —
+    <a href="/projects" style="color:var(--accent2);font-weight:600;">перейти к проектам</a>.
 </div>
 {% endif %}
 {% endblock %}

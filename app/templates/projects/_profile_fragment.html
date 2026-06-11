@@ -13,10 +13,33 @@
 <div class="alert alert-error" style="margin-bottom:1rem;">
     <strong>Ошибка ИИ:</strong> {{ llm_error }}
 </div>
+
+{# Поля шага 1 снова редактируемы — можно поправить и повторить #}
+<div class="card" style="margin-bottom:1.5rem;">
+    <h2>О проекте</h2>
+    <div class="form-group">
+        <label for="step1-name">Название проекта <span style="color:var(--red)">*</span></label>
+        <input type="text" id="step1-name" name="name" required
+               value="{{ step1.name }}" />
+    </div>
+    <div class="form-group">
+        <label for="step1-description">Описание (что за продукт/услуга)</label>
+        <textarea id="step1-description" name="description">{{ step1.description }}</textarea>
+    </div>
+    <div class="form-group">
+        <label for="step1-goals">Цель продвижения</label>
+        <textarea id="step1-goals" name="goals" style="min-height:60px;">{{ step1.goals }}</textarea>
+    </div>
+</div>
+
+<div id="profile-spinner" style="display:none; margin-bottom:1rem;" class="text-sm">
+    <span class="text-muted">⏳ ИИ составляет профиль…</span>
+</div>
+
 <div class="flex gap-sm">
     <button type="button" class="btn btn-primary"
             hx-post="/projects/generate-profile"
-            hx-vals='{"name": "{{ step1.name|e }}", "description": "{{ step1.description|e }}", "goals": "{{ step1.goals|e }}"}'
+            hx-include="#step1-name, #step1-description, #step1-goals"
             hx-target="#full-form-container"
             hx-swap="outerHTML"
             hx-indicator="#profile-spinner">
@@ -24,9 +47,10 @@
     </button>
     <button type="button" class="btn btn-secondary"
             hx-post="/projects/generate-profile"
-            hx-vals='{"name": "{{ step1.name|e }}", "description": "{{ step1.description|e }}", "goals": "{{ step1.goals|e }}", "manual": "1"}'
+            hx-include="#step1-name, #step1-description, #step1-goals"
             hx-target="#full-form-container"
-            hx-swap="outerHTML">
+            hx-swap="outerHTML"
+            hx-vals='{"manual": "1"}'>
         Заполнить вручную
     </button>
 </div>

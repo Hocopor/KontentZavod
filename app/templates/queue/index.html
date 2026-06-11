@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 
-{% block title %}Очередь — {{ month_name }} {{ year }} — КонтентЗавод{% endblock %}
+{% block title %}Публикация — {{ month_name }} {{ year }} — КонтентЗавод{% endblock %}
 
 {% block head %}
 <style>
-/* ── Шахматка очереди (аналог plan-board) ── */
+/* ── Шахматка публикации ── */
 .queue-toolbar {
     display: flex;
     flex-wrap: wrap;
@@ -18,6 +18,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--bg2);
+    margin-bottom: 1.2rem;
 }
 
 .plan-board {
@@ -59,12 +60,18 @@
     top: 0;
 }
 
+.plan-board th.today-head {
+    color: var(--accent2);
+    border-color: var(--accent);
+}
+
 .plan-board td {
     border: 1px solid var(--border);
-    padding: .25rem .3rem;
+    padding: .2rem .25rem;
     vertical-align: top;
-    min-width: 42px;
-    max-width: 70px;
+    min-width: 36px;
+    max-width: 60px;
+    text-align: center;
 }
 
 .plan-board td.today-col {
@@ -87,44 +94,42 @@
     font-size: .78rem;
 }
 
-/* Мини-карточки в ячейках */
-.queue-card {
-    display: block;
-    margin-bottom: 2px;
-    padding: .1rem .25rem;
+/* Точки в ячейках */
+.q-dot {
+    display: inline-block;
+    width: 11px;
+    height: 11px;
     border-radius: 3px;
-    font-size: .78rem;
-    line-height: 1.4;
     cursor: pointer;
-    background: var(--bg3);
-    transition: opacity .1s;
-    text-align: center;
-    color: var(--text);
-    text-decoration: none;
-    border: 1px solid var(--border);
+    margin: 1px;
+    flex-shrink: 0;
+    transition: opacity .12s;
+    vertical-align: middle;
 }
-.queue-card:hover { opacity: .8; }
-.queue-card.st-generating { border-color: #38bdf8; animation: pulse-blue 1.5s infinite; }
-.queue-card.st-error      { border-color: #ef4444; background: rgba(239,68,68,.08); }
-.queue-card.st-generated  { border-color: #6c63ff; background: rgba(108,99,255,.07); }
+.q-dot:hover { opacity: .7; transform: scale(1.2); }
 
-@keyframes pulse-blue {
+.dot-generating { background: #38bdf8; animation: pulse-q 1.5s infinite; }
+.dot-error      { background: #ef4444; }
+.dot-generated  { background: #6c63ff; }
+.dot-planned    { background: #22c55e; }
+.dot-published  { background: #10b981; }
+.dot-manual     { background: #f97316; }
+
+@keyframes pulse-q {
     0%, 100% { opacity: 1; }
-    50%       { opacity: .5; }
+    50%       { opacity: .4; }
 }
 
 /* Легенда */
-.plan-legend {
+.pub-legend {
     display: flex;
     flex-wrap: wrap;
-    gap: .4rem .8rem;
+    gap: .35rem .8rem;
     font-size: .78rem;
-    margin-bottom: 1rem;
+    margin-bottom: 1.2rem;
+    color: var(--text2);
 }
-.plan-legend-item { display: flex; align-items: center; gap: .3rem; }
-.plan-legend-dot  {
-    width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0;
-}
+.pub-legend-item { display: flex; align-items: center; gap: .3rem; }
 
 /* Модалка */
 #modal-overlay {
@@ -143,15 +148,15 @@
     border-radius: var(--radius);
     padding: 1.5rem;
     width: 100%;
-    max-width: 560px;
-    max-height: 90vh;
+    max-width: 580px;
+    max-height: 92vh;
     overflow-y: auto;
     position: relative;
     box-shadow: 0 8px 32px rgba(0,0,0,.5);
 }
 #modal-close {
     position: absolute;
-    top: .75rem; right: .75rem;
+    top: .6rem; right: .6rem;
     background: none;
     border: none;
     color: var(--text2);
@@ -166,10 +171,77 @@
 /* Пустое состояние */
 .empty-state {
     text-align: center;
-    padding: 4rem 2rem;
+    padding: 3.5rem 2rem;
     color: var(--text2);
 }
-.empty-state .empty-icon { font-size: 3rem; margin-bottom: 1rem; }
+.empty-state .empty-icon { font-size: 2.8rem; margin-bottom: .8rem; }
+
+/* Секция ручной публикации */
+.manual-section h2 { margin: 1.5rem 0 .75rem; font-size: 1.05rem; }
+.manual-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.1rem;
+    margin-bottom: .75rem;
+}
+.manual-card-head {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    flex-wrap: wrap;
+    margin-bottom: .6rem;
+}
+.copy-text-area {
+    white-space: pre-wrap;
+    font-size: .86rem;
+    line-height: 1.5;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: .6rem .8rem;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: .5rem;
+    cursor: text;
+}
+.manual-form { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-top: .6rem; }
+.manual-form input[type=url] {
+    flex: 1;
+    min-width: 200px;
+    padding: .45rem .7rem;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: .88rem;
+}
+
+/* Секция «Вне плана» */
+.orphan-section summary {
+    cursor: pointer;
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 1.5rem 0 .75rem;
+    color: var(--text2);
+    user-select: none;
+}
+.orphan-section summary:hover { color: var(--text); }
+.orphan-table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.orphan-table th {
+    background: var(--bg3);
+    padding: .35rem .5rem;
+    border: 1px solid var(--border);
+    text-align: left;
+    font-weight: 600;
+    color: var(--text2);
+    font-size: .78rem;
+}
+.orphan-table td {
+    padding: .3rem .5rem;
+    border: 1px solid var(--border);
+    vertical-align: middle;
+}
 </style>
 {% endblock %}
 
@@ -182,14 +254,20 @@
     </div>
 </div>
 
-<h1 style="margin-bottom:1rem;">📦 Очередь контента</h1>
+<h1 style="margin-bottom:1rem;">Публикация</h1>
+
+{% if not enable_scheduler %}
+<div class="alert alert-warning" style="margin-bottom:1.2rem;">
+    ⚠ Автопубликация выключена — запланированный контент не отправляется.
+    Установите <code>ENABLE_SCHEDULER=1</code> в <code>.env</code>.
+</div>
+{% endif %}
 
 {% if not project %}
-<!-- Пустое состояние: нет проектов -->
 <div class="card empty-state">
-    <div class="empty-icon">📦</div>
-    <p style="font-size:1.1rem;font-weight:600;margin-bottom:.5rem;">Нет активных проектов</p>
-    <p class="text-muted" style="margin-bottom:1.5rem;">Создайте проект, чтобы начать генерацию контента.</p>
+    <div class="empty-icon">📋</div>
+    <p style="font-size:1.05rem;font-weight:600;margin-bottom:.5rem;">Нет активных проектов</p>
+    <p class="text-muted" style="margin-bottom:1.2rem;">Создайте проект, чтобы начать генерацию контента.</p>
     <a href="/projects" class="btn btn-primary">Создать проект</a>
 </div>
 
@@ -197,8 +275,6 @@
 
 <!-- ── Тулбар ── -->
 <div class="queue-toolbar">
-
-    <!-- Селектор проекта -->
     {% if all_projects | length > 1 %}
     <form method="get" action="/queue" style="display:inline-flex;align-items:center;gap:.4rem;">
         <input type="hidden" name="month" value="{{ year }}-{{ '%02d' % month }}">
@@ -214,7 +290,6 @@
     <span style="font-weight:600;font-size:1rem;">{{ project.name }}</span>
     {% endif %}
 
-    <!-- Переключатель месяца -->
     <a href="/queue?project={{ project.slug }}&month={{ prev_month_str }}"
        class="btn btn-secondary btn-sm">←</a>
     <span style="font-weight:600;font-size:.95rem;min-width:120px;text-align:center;">
@@ -223,50 +298,20 @@
     <a href="/queue?project={{ project.slug }}&month={{ next_month_str }}"
        class="btn btn-secondary btn-sm">→</a>
     <a href="/queue?project={{ project.slug }}" class="btn btn-secondary btn-sm">Сегодня</a>
-
-</div><!-- /queue-toolbar -->
-
-<!-- ── Легенда ── -->
-<div class="plan-legend">
-    <div class="plan-legend-item">
-        <div class="plan-legend-dot" style="background:#38bdf8;"></div>
-        <span>⏳ Генерируется</span>
-    </div>
-    <div class="plan-legend-item">
-        <div class="plan-legend-dot" style="background:#ef4444;"></div>
-        <span>⚠ Ошибка генерации</span>
-    </div>
-    <div class="plan-legend-item">
-        <div class="plan-legend-dot" style="background:#6c63ff;"></div>
-        <span>✓ Готов (без расписания)</span>
-    </div>
-    <div class="plan-legend-item">
-        <div class="plan-legend-dot" style="background:#22c55e;"></div>
-        <span>📅 Запланирован</span>
-    </div>
-    <div class="plan-legend-item">
-        <div class="plan-legend-dot" style="background:#22c55e;"></div>
-        <span>🚀 Опубликован</span>
-    </div>
-    <div class="plan-legend-item">
-        <div class="plan-legend-dot" style="background:#f97316;"></div>
-        <span>✋ Ожидает ручной публикации</span>
-    </div>
-    <div class="plan-legend-item">
-        <div class="plan-legend-dot" style="background:#ef4444;"></div>
-        <span>❌ Ошибка публикации</span>
-    </div>
 </div>
 
 {% if not rows_data %}
-<div class="card empty-state" style="padding:2rem;">
-    <div class="empty-icon">📦</div>
-    <p class="text-muted">В этом месяце нет сгенерированного контента.</p>
-    <p class="text-muted" style="margin-top:.5rem;">
-        Одобрите пункты плана и дождитесь завершения генерации.
+<!-- Пустое состояние шахматки -->
+<div class="card empty-state" style="padding:2.5rem;">
+    <div class="empty-icon">📋</div>
+    <p style="font-size:1rem;font-weight:600;margin-bottom:.5rem;">
+        Здесь появится готовый контент.
+    </p>
+    <p class="text-muted" style="margin-bottom:1.2rem;">
+        Сначала одобрите пункты в Контент-плане и включите «Генерацию одобренного».
     </p>
     <a href="/plan?project={{ project.slug }}&year={{ year }}&month={{ month }}"
-       class="btn btn-secondary btn-sm" style="margin-top:1rem;">Перейти к плану</a>
+       class="btn btn-primary btn-sm">Перейти к Контент-плану →</a>
 </div>
 
 {% else %}
@@ -278,7 +323,7 @@
 <tr>
     <th class="row-header">Платформа / Тип</th>
     {% for dh in day_headers %}
-    <th style="{% if dh.today %}color:var(--accent2);border-color:var(--accent);{% endif %}">
+    <th {% if dh.today %}class="today-head"{% endif %}>
         {{ dh.day }}<br><span style="font-weight:400;font-size:.7rem;">{{ dh.wd }}</span>
     </th>
     {% endfor %}
@@ -286,7 +331,6 @@
 </thead>
 <tbody>
 {% for plat_row in rows_data %}
-<!-- Строка-заголовок платформы -->
 <tr>
     <td class="row-header platform-header" colspan="{{ day_headers | length + 1 }}"
         onclick="togglePlatform('{{ plat_row.platform }}')">
@@ -300,15 +344,13 @@
     {% set dh = day_headers[loop.index0] %}
     <td {% if dh.today %}class="today-col"{% endif %}>
         {% for item in day_items %}
-        <a class="queue-card st-{{ item.status }}"
-           href="#"
-           title="{{ item.status_label }}: {{ item.time_slot or '' }} {{ item.title }}"
-           hx-get="/queue/items/{{ item.id }}/modal"
-           hx-target="#modal-content"
-           hx-swap="innerHTML"
-           onclick="openModal(event)">
-            {{ item.cell_icon }}
-        </a>
+        <span class="q-dot {{ item.dot_class }}"
+              title="{{ item.status_label }}: {{ item.time_slot or '' }} {{ item.title }}"
+              hx-get="/queue/items/{{ item.id }}/modal"
+              hx-target="#modal-content"
+              hx-swap="innerHTML"
+              onclick="openModal(event)"
+              style="cursor:pointer;"></span>
         {% endfor %}
     </td>
     {% endfor %}
@@ -317,9 +359,166 @@
 {% endfor %}
 </tbody>
 </table>
-</div><!-- /plan-board-wrap -->
+</div>
+
+<!-- ── Легенда ── -->
+<div class="pub-legend">
+    <div class="pub-legend-item">
+        <span class="q-dot dot-generating" style="cursor:default;"></span>
+        <span>Генерируется</span>
+    </div>
+    <div class="pub-legend-item">
+        <span class="q-dot dot-error" style="cursor:default;"></span>
+        <span>Ошибка</span>
+    </div>
+    <div class="pub-legend-item">
+        <span class="q-dot dot-generated" style="cursor:default;"></span>
+        <span>Готово</span>
+    </div>
+    <div class="pub-legend-item">
+        <span class="q-dot dot-planned" style="cursor:default;"></span>
+        <span>Запланировано</span>
+    </div>
+    <div class="pub-legend-item">
+        <span class="q-dot dot-published" style="cursor:default;"></span>
+        <span>Опубликовано</span>
+    </div>
+    <div class="pub-legend-item">
+        <span class="q-dot dot-manual" style="cursor:default;"></span>
+        <span>Ждёт ручной публикации</span>
+    </div>
+</div>
 
 {% endif %}<!-- /rows_data -->
+
+<!-- ── Ручная публикация ── -->
+<div class="manual-section">
+    <h2>Ручная публикация
+        {% if manual_items %}
+        <span class="badge" style="background:var(--accent);color:#fff;font-size:.78rem;
+              vertical-align:middle;padding:.15rem .5rem;border-radius:999px;">
+            {{ manual_items | length }}
+        </span>
+        {% endif %}
+    </h2>
+
+    {% if not manual_items %}
+    <p class="text-muted" style="font-size:.88rem;">
+        Нет контента, ожидающего ручной публикации. Instagram и Яндекс.Дзен появятся здесь
+        автоматически после генерации.
+    </p>
+    {% else %}
+    {% for mi in manual_items %}
+    <div class="manual-card">
+        <div class="manual-card-head">
+            <span class="badge" style="background:var(--bg3);color:var(--text2);">{{ mi.platform_label }}</span>
+            <span style="font-size:.85rem;font-weight:600;">{{ mi.title or '(без заголовка)' }}</span>
+            {% if mi.planned_at %}
+            <span style="font-size:.78rem;color:var(--text2);">{{ mi.planned_at[:10] }}</span>
+            {% endif %}
+        </div>
+
+        <!-- Текст для копирования -->
+        {% if mi.copy_text %}
+        <div class="copy-text-area" id="copy-text-{{ mi.schedule_id }}">{{ mi.copy_text }}</div>
+        <button type="button" class="btn btn-secondary btn-sm"
+                onclick="copyText('copy-text-{{ mi.schedule_id }}', this)">
+            Скопировать текст
+        </button>
+        {% endif %}
+
+        <!-- Видео: плеер + скачать -->
+        {% if mi.type in ('video_footage', 'video_slideshow') %}
+        <div style="margin-top:.6rem;">
+            <video controls
+                   src="/files/videos/{{ mi.content_id }}.mp4"
+                   poster="/files/videos/{{ mi.content_id }}.jpg"
+                   style="width:100%;max-height:220px;border-radius:var(--radius);background:#000;">
+                Ваш браузер не поддерживает видео.
+            </video>
+            <a href="/files/videos/{{ mi.content_id }}.mp4" download
+               class="btn btn-secondary btn-sm" style="margin-top:.4rem;">Скачать mp4</a>
+        </div>
+        {% elif mi.type == 'story' %}
+        <div style="margin-top:.6rem;">
+            <img src="/files/images/{{ mi.content_id }}.jpg"
+                 alt="{{ mi.title or 'Story' }}"
+                 style="max-height:250px;border-radius:var(--radius);object-fit:contain;background:#000;">
+            {% set caption = mi.texts_parsed.get(mi.platform, {}).get('caption', '') %}
+            {% if caption %}
+            <div style="margin-top:.4rem;font-size:.85rem;color:var(--text2);">{{ caption }}</div>
+            {% endif %}
+            <a href="/files/images/{{ mi.content_id }}.jpg" download
+               class="btn btn-secondary btn-sm" style="margin-top:.4rem;">Скачать картинку</a>
+        </div>
+        {% endif %}
+
+        <!-- Форма: URL + кнопка «Опубликовано» -->
+        <div class="manual-form"
+             hx-post="/queue/schedules/{{ mi.schedule_id }}/manual-done"
+             hx-target="closest .manual-card"
+             hx-swap="outerHTML"
+             hx-include="find input[name=published_url]">
+            <input type="url" name="published_url" placeholder="URL опубликованного (необязательно)">
+            <button type="button" class="btn btn-primary btn-sm"
+                    onclick="submitManualForm(this)">
+                Опубликовано ✓
+            </button>
+        </div>
+    </div>
+    {% endfor %}
+    {% endif %}
+</div>
+
+<!-- ── Вне плана ── -->
+{% if orphan_content %}
+<details class="orphan-section">
+    <summary>
+        Вне плана
+        <span class="badge" style="background:var(--bg3);color:var(--text2);font-size:.75rem;
+              padding:.1rem .45rem;border-radius:999px;">{{ orphan_content | length }}</span>
+    </summary>
+    <p class="text-muted" style="font-size:.83rem;margin-bottom:.7rem;">
+        Контент без связанного пункта плана — старый флоу или удалённые из плана пункты.
+        Можно безопасно удалить.
+    </p>
+    <table class="orphan-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Проект</th>
+                <th>Тип</th>
+                <th>Заголовок</th>
+                <th>Статус</th>
+                <th>Создан</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for oc in orphan_content %}
+        <tr id="orphan-row-{{ oc.id }}">
+            <td style="color:var(--text2);">{{ oc.id }}</td>
+            <td>{{ oc.project_name }}</td>
+            <td>{{ oc.type }}</td>
+            <td>{{ (oc.title or '')[:60] or '—' }}</td>
+            <td>{{ oc.status }}</td>
+            <td style="color:var(--text2);">{{ (oc.created_at or '')[:10] }}</td>
+            <td>
+                <button type="button" class="btn btn-danger btn-sm"
+                        hx-post="/queue/orphans/{{ oc.id }}/delete"
+                        hx-target="#orphan-row-{{ oc.id }}"
+                        hx-swap="outerHTML"
+                        hx-confirm="Удалить контент #{{ oc.id }}? Это действие необратимо.">
+                    Удалить
+                </button>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</details>
+{% endif %}
+
 {% endif %}<!-- /project -->
 
 <script>
@@ -344,10 +543,32 @@ document.addEventListener('keydown', function(e) {
 });
 
 function togglePlatform(platform) {
-    var rows = document.querySelectorAll('.plat-' + platform + '-rows');
-    rows.forEach(function(r) {
+    document.querySelectorAll('.plat-' + platform + '-rows').forEach(function(r) {
         r.style.display = r.style.display === 'none' ? '' : 'none';
     });
+}
+
+function copyText(elemId, btn) {
+    var el = document.getElementById(elemId);
+    if (!el) return;
+    navigator.clipboard.writeText(el.innerText).then(function() {
+        var old = btn.textContent;
+        btn.textContent = 'Скопировано ✓';
+        setTimeout(function() { btn.textContent = old; }, 2000);
+    }).catch(function() {
+        var range = document.createRange();
+        range.selectNode(el);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        document.execCommand('copy');
+        window.getSelection().removeAllRanges();
+    });
+}
+
+function submitManualForm(btn) {
+    var card = btn.closest('.manual-card');
+    var formEl = card.querySelector('[hx-post]');
+    htmx.trigger(formEl, 'submit');
 }
 </script>
 {% endblock %}

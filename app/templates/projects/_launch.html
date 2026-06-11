@@ -77,22 +77,22 @@
         <div class="section-title">Параметры генерации</div>
         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1rem; margin-bottom:1.25rem;">
             <div class="form-group" style="margin-bottom:0;">
-                <label for="plan_horizon_days_{{ project.slug }}">Контент-план на (дней вперёд)</label>
+                <label for="plan_horizon_days_{{ project.slug }}">Горизонт плана (дней)</label>
                 <input type="number" id="plan_horizon_days_{{ project.slug }}" name="plan_horizon_days"
                        value="{{ settings.plan_horizon_days }}" min="7" max="90" />
-                <div class="form-help">7–90 дней</div>
+                <div class="form-help" style="color:var(--text2);">На сколько дней вперёд строится контент-план (7–90)</div>
             </div>
             <div class="form-group" style="margin-bottom:0;">
-                <label for="gen_lookahead_days_{{ project.slug }}">Генерация контента на (дней вперёд)</label>
+                <label for="gen_lookahead_days_{{ project.slug }}">Опережение генерации (дней)</label>
                 <input type="number" id="gen_lookahead_days_{{ project.slug }}" name="gen_lookahead_days"
                        value="{{ settings.gen_lookahead_days }}" min="1" max="14" />
-                <div class="form-help">1–14 дней</div>
+                <div class="form-help" style="color:var(--text2);">За сколько дней до даты публикации создаётся контент (1–14)</div>
             </div>
             <div class="form-group" style="margin-bottom:0;">
-                <label for="retention_days_{{ project.slug }}">Хранить опубликованное (дней)</label>
+                <label for="retention_days_{{ project.slug }}">Хранение видеофайлов (дней)</label>
                 <input type="number" id="retention_days_{{ project.slug }}" name="retention_days"
                        value="{{ settings.retention_days }}" min="3" max="60" />
-                <div class="form-help">3–60 дней</div>
+                <div class="form-help" style="color:var(--text2);">Сколько дней хранить видеофайлы после публикации (3–60)</div>
             </div>
         </div>
 
@@ -136,9 +136,9 @@
         {% if project.stage == 'running' %}
         <div class="section-title mt-2">Управление потоками</div>
         <div class="flex gap-md" style="flex-wrap:wrap; align-items:center; margin-bottom:.5rem;">
-            {# Контент-план #}
+            {# Планирование #}
             <div class="flex-center gap-sm">
-                <span class="text-sm text-muted">Контент-план:</span>
+                <span class="text-sm text-muted">Планирование:</span>
                 {% if settings.plan_paused %}
                 <span class="badge" style="background:rgba(245,158,11,.15);color:var(--yellow);">на паузе</span>
                 {% else %}
@@ -152,9 +152,9 @@
                 </button>
             </div>
 
-            {# Генерация контента #}
+            {# Генерация #}
             <div class="flex-center gap-sm">
-                <span class="text-sm text-muted">Генерация контента:</span>
+                <span class="text-sm text-muted">Генерация:</span>
                 {% if settings.gen_paused %}
                 <span class="badge" style="background:rgba(245,158,11,.15);color:var(--yellow);">на паузе</span>
                 {% else %}
@@ -168,9 +168,9 @@
                 </button>
             </div>
 
-            {# Автогенерация одобренного #}
+            {# Генерация одобренного #}
             <div class="flex-center gap-sm">
-                <span class="text-sm text-muted">Автогенерация одобренного:</span>
+                <span class="text-sm text-muted">Генерация одобренного:</span>
                 {% if settings.autogen %}
                 <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);">вкл</span>
                 {% else %}

@@ -265,3 +265,37 @@ def test_full_cycle_generate_profile_then_create(client, patch_env):
     assert row["themes"] is not None and "Маркетинг" in row["themes"]
     assert row["forbidden"] is not None and "Политика" in row["forbidden"]
     assert row["extra"] is not None and "результатах" in row["extra"]
+
+
+# ─── Тест: секция «Идеи» удалена со страницы проекта ─────────────────────────
+
+def test_detail_page_has_no_ideas_section(client, patch_env):
+    """На детальной странице проекта нет секции «Идеи» и связанных кнопок старого флоу."""
+    from app.db import get_db, init_db
+    import app.config as cfg_module
+
+    init_db(cfg_module.settings.db_path_absolute)
+
+    # Создать проект
+    resp = client.post(
+        "/projects/new",
+        data={"name": "Тест без идей", "description": "Описание", "goals": "Цели"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    slug = resp.headers["location"].rstrip("/").split("/")[-1]
+
+    # Проверить страницу проекта
+    detail = client.get(f"/projects/{slug}")
+    assert detail.status_code == 200
+
+    # Секция «Идеи» и кнопки старого флоу отсутствуют
+    assert "Сгенерировать идеи" not in detail.text
+    assert "ideas/generate" not in detail.text
+    assert "Сделать пост" not in detail.text
+    assert "A/B пост" not in detail.text
+    assert "Слайдшоу" not in detail.text
+    assert "Футажи" not in detail.text
+    # id секции ideas удалён
+    assert 'id="ideas-section"' not in detail.text
+    assert 'id="ideas"' not in detail.text

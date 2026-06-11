@@ -11,11 +11,7 @@
         <span class="badge" style="background:var(--bg3);color:var(--text2);">
             {{ item.type_label }}
         </span>
-        <span style="display:inline-block;padding:.15rem .5rem;border-radius:999px;font-size:.75rem;
-                     font-weight:600;background:{{ item.status_color }}22;
-                     color:{{ item.status_color }};border:1px solid {{ item.status_color }}44;">
-            {{ item.status_label }}
-        </span>
+        <span class="chip chip-{{ item.status }}">{{ item.status_label }}</span>
     </div>
 
     {% if item.error_text %}
@@ -24,9 +20,9 @@
 
     {% if item.status == 'generated' and item.content_id %}
     <div class="alert alert-info" style="font-size:.82rem;">
-        Контент сгенерирован.
-        <a href="/review/{{ item.content_id }}" style="color:var(--accent2);text-decoration:underline;">
-            Перейти к контенту →
+        Контент готов.
+        <a href="/queue" style="color:var(--accent2);text-decoration:underline;">
+            Открыть в Публикации → /queue
         </a>
     </div>
     {% endif %}
@@ -97,15 +93,15 @@
         </div>
     </div>
 
-    <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem;">
-        <button type="submit" class="btn btn-primary btn-sm">💾 Сохранить</button>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem;align-items:center;">
+        <button type="submit" class="btn btn-primary btn-sm">💾 Сохранить правки</button>
 
         {% if item.status in ('proposed', 'rejected', 'error') %}
         <button type="button" class="btn btn-success btn-sm"
                 hx-post="/plan/item/{{ item.id }}/approve"
                 hx-target="#modal-content"
                 hx-swap="innerHTML">
-            ✅ Одобрить
+            ✓ Одобрить
         </button>
         {% endif %}
 
@@ -114,7 +110,15 @@
                 hx-post="/plan/item/{{ item.id }}/reject"
                 hx-target="#modal-content"
                 hx-swap="innerHTML">
-            🚫 Отклонить
+            ✗ Отклонить
+        </button>
+        {% endif %}
+
+        {% if item.content_id is none or item.content_id == '' %}
+        <button type="button" class="btn btn-danger btn-sm"
+                onclick="deletePlanItem({{ item.id }})"
+                title="Удалить пункт плана (только если контент ещё не создан)">
+            🗑 Удалить пункт
         </button>
         {% endif %}
 

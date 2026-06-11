@@ -1,20 +1,18 @@
 {#
-    Фрагмент модалки пункта очереди.
-    Контекст: item (dict), content (dict|None), schedule (dict|None).
+    Модалка пункта публикации (v2).
+    Контекст: item, content (|None), schedule (|None), status_labels.
     Используется через HTMX hx-get=/queue/items/{id}/modal → hx-target=#modal-content.
 #}
 
-{# Метки статусов schedule #}
 {% set sched_labels = {
     "planned":        "Запланировано",
     "publishing":     "Публикуется",
     "published":      "Опубликовано",
     "error":          "Ошибка публикации",
-    "manual_pending": "Ожидает ручной публикации",
+    "manual_pending": "Ждёт ручной публикации",
     "manual_done":    "Опубликовано вручную",
 } %}
 
-{# Иконки статусов schedule #}
 {% set sched_icons = {
     "planned":        "📅",
     "publishing":     "⏳",
@@ -24,170 +22,156 @@
     "manual_done":    "✅",
 } %}
 
-<!-- Заголовок: платформа / тип / статус -->
-<div style="margin-bottom:1rem;">
-    <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.5rem;">
-        <span class="badge" style="background:var(--bg3);color:var(--text2);">
-            {{ item.platform_label }}
-        </span>
-        <span class="badge" style="background:var(--bg3);color:var(--text2);">
-            {{ item.type_label }}
-        </span>
-        <span style="display:inline-block;padding:.15rem .5rem;border-radius:999px;font-size:.75rem;
-                     font-weight:600;background:{{ item.status_color }}22;
-                     color:{{ item.status_color }};border:1px solid {{ item.status_color }}44;">
-            {{ item.status_label }}
-        </span>
+<!-- Заголовок -->
+<div style="margin-bottom:.8rem;">
+    <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem;">
+        <span class="badge" style="background:var(--bg3);color:var(--text2);">{{ item.platform_label }}</span>
+        <span class="badge" style="background:var(--bg3);color:var(--text2);">{{ item.type_label }}</span>
     </div>
-
-    <!-- Дата и время -->
-    <div style="font-size:.85rem;color:var(--text2);margin-bottom:.3rem;">
-        📅 {{ item.date }}{% if item.time_slot %} в {{ item.time_slot }}{% endif %}
+    <div style="font-size:.82rem;color:var(--text2);">
+        {{ item.date }}{% if item.time_slot %} в {{ item.time_slot }}{% endif %}
     </div>
-
-    <!-- Заголовок пункта -->
     {% if item.title %}
-    <div style="font-weight:600;font-size:1rem;margin-bottom:.5rem;">{{ item.title }}</div>
-    {% endif %}
-
-    <!-- Ошибка генерации (статус error у plan_item) -->
-    {% if item.status == 'error' and item.error_text %}
-    <div class="alert alert-error" style="font-size:.82rem;">
-        <strong>Ошибка генерации:</strong> {{ item.error_text }}
-    </div>
-    {% endif %}
-
-    <!-- Статус: генерируется -->
-    {% if item.status == 'generating' %}
-    <div class="alert alert-info" style="font-size:.82rem;">
-        ⏳ Контент генерируется, ожидайте…
-    </div>
+    <div style="font-weight:600;font-size:.98rem;margin-top:.3rem;">{{ item.title }}</div>
     {% endif %}
 </div>
+
+<!-- Статус генерации -->
+{% if item.status == 'generating' %}
+<div class="alert alert-info" style="font-size:.83rem;margin-bottom:.75rem;">
+    ⏳ Генерируется — ожидайте завершения.
+</div>
+{% elif item.status == 'error' and item.error_text %}
+<div class="alert alert-error" style="font-size:.83rem;margin-bottom:.75rem;">
+    <strong>Ошибка генерации:</strong> {{ item.error_text }}
+</div>
+{% endif %}
+
+<!-- Статус публикации -->
+{% if content and schedule %}
+<div style="margin-bottom:.8rem;padding:.55rem .8rem;border-radius:var(--radius);
+            background:var(--bg3);border:1px solid var(--border);font-size:.86rem;">
+    <span>{{ sched_icons.get(schedule.status, '?') }}</span>
+    <span style="margin-left:.3rem;">{{ sched_labels.get(schedule.status, schedule.status) }}</span>
+    {% if schedule.planned_at %}
+    <span style="color:var(--text2);font-size:.8rem;margin-left:.4rem;">{{ schedule.planned_at[:16] }}</span>
+    {% endif %}
+    {% if schedule.status == 'published' and schedule.published_url %}
+    <div style="margin-top:.3rem;">
+        <a href="{{ schedule.published_url }}" target="_blank" rel="noopener"
+           style="color:var(--accent2);font-size:.82rem;word-break:break-all;">
+            {{ schedule.published_url }}
+        </a>
+    </div>
+    {% endif %}
+    {% if schedule.status in ('error',) and schedule.error_text %}
+    <div style="margin-top:.3rem;color:#fca5a5;font-size:.8rem;">{{ schedule.error_text }}</div>
+    {% endif %}
+</div>
+{% elif content and not schedule %}
+<div style="margin-bottom:.6rem;font-size:.82rem;color:var(--text2);">
+    ✓ Готово к публикации (расписание не создано)
+</div>
+{% endif %}
 
 <!-- Превью контента -->
 {% if content %}
 
-    <!-- Статус публикации -->
-    {% if schedule %}
-    <div style="margin-bottom:1rem;padding:.65rem .9rem;border-radius:var(--radius);
-                background:var(--bg3);border:1px solid var(--border);font-size:.88rem;">
-        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
-            <span>{{ sched_icons.get(schedule.status, '?') }}</span>
-            <span>{{ sched_labels.get(schedule.status, schedule.status) }}</span>
-        </div>
-        {% if schedule.status == 'published' and schedule.published_url %}
-        <div style="margin-top:.4rem;">
-            <a href="{{ schedule.published_url }}" target="_blank" rel="noopener"
-               style="color:var(--accent2);font-size:.83rem;">
-                {{ schedule.published_url }}
-            </a>
-        </div>
-        {% endif %}
-        {% if schedule.status == 'error' and schedule.error_text %}
-        <div style="margin-top:.4rem;color:#fca5a5;font-size:.82rem;">
-            {{ schedule.error_text }}
-        </div>
-        {% endif %}
+{% if content.type in ('video_footage', 'video_slideshow') %}
+<div style="margin-bottom:.8rem;">
+    <video controls
+           src="/files/videos/{{ content.id }}.mp4"
+           poster="/files/videos/{{ content.id }}.jpg"
+           style="width:100%;border-radius:var(--radius);background:#000;max-height:280px;">
+        Ваш браузер не поддерживает видео.
+    </video>
+    <div style="margin-top:.4rem;">
+        <a href="/files/videos/{{ content.id }}.mp4" download
+           class="btn btn-secondary btn-sm">Скачать mp4</a>
     </div>
-    {% else %}
-    <div style="margin-bottom:.75rem;font-size:.82rem;color:var(--text2);">
-        ✓ Готов к публикации (не запланирован)
-    </div>
+</div>
+
+{% elif content.type == 'story' %}
+<div style="margin-bottom:.8rem;">
+    <img src="/files/images/{{ content.id }}.jpg"
+         alt="{{ content.title or 'Story' }}"
+         style="width:100%;border-radius:var(--radius);max-height:360px;
+                object-fit:contain;background:#000;">
+    {% set capt = content.texts_parsed.get(item.platform, {}).get('caption', '') %}
+    {% if capt %}
+    <div style="margin-top:.4rem;font-size:.85rem;color:var(--text2);">{{ capt }}</div>
     {% endif %}
-
-    <!-- Превью по типу контента -->
-    {% if content.type in ('video_footage', 'video_slideshow') %}
-    <!-- Видео -->
-    <div style="margin-bottom:1rem;">
-        <video controls
-               src="/files/videos/{{ content.id }}.mp4"
-               poster="/files/videos/{{ content.id }}.jpg"
-               style="width:100%;border-radius:var(--radius);background:#000;max-height:300px;">
-            Ваш браузер не поддерживает тег video.
-        </video>
-        <div style="margin-top:.5rem;">
-            <a href="/files/videos/{{ content.id }}.mp4" download
-               class="btn btn-secondary btn-sm">
-                ⬇ Скачать mp4
-            </a>
-        </div>
+    <div style="margin-top:.4rem;">
+        <a href="/files/images/{{ content.id }}.jpg" download
+           class="btn btn-secondary btn-sm">Скачать картинку</a>
     </div>
+</div>
 
-    {% elif content.type == 'story' %}
-    <!-- История (изображение) -->
-    <div style="margin-bottom:1rem;">
-        <img src="/files/images/{{ content.id }}.jpg"
-             alt="{{ content.title or 'Story' }}"
-             style="width:100%;border-radius:var(--radius);max-height:400px;object-fit:contain;background:#000;">
-        {% if content.texts_parsed %}
-        {% set capt = content.texts_parsed.get(item.platform, {}).get('caption', '') %}
-        {% if capt %}
-        <div style="margin-top:.5rem;font-size:.88rem;color:var(--text2);">{{ capt }}</div>
-        {% endif %}
-        {% endif %}
-        <div style="margin-top:.5rem;">
-            <a href="/files/images/{{ content.id }}.jpg" download
-               class="btn btn-secondary btn-sm">
-                ⬇ Скачать картинку
-            </a>
-        </div>
-    </div>
-
-    {% else %}
-    <!-- Текстовый контент: post / article -->
-    <div style="margin-bottom:1rem;">
-        {% set plat_texts = content.texts_parsed.get(item.platform, {}) %}
-        {% if plat_texts %}
-            {% if plat_texts.text %}
-            <div style="white-space:pre-wrap;font-size:.88rem;line-height:1.55;
-                        background:var(--bg3);border:1px solid var(--border);
-                        border-radius:var(--radius);padding:.75rem 1rem;
-                        max-height:300px;overflow-y:auto;">{{ plat_texts.text }}</div>
-            {% endif %}
-            {% if plat_texts.caption %}
-            <div style="margin-top:.5rem;white-space:pre-wrap;font-size:.85rem;
-                        color:var(--text2);">{{ plat_texts.caption }}</div>
-            {% endif %}
-        {% else %}
-        <!-- Пробуем показать любой доступный текст -->
-        {% for plat_key, plat_val in content.texts_parsed.items() %}
-        {% if loop.first %}
-        <div style="font-size:.78rem;color:var(--text2);margin-bottom:.3rem;">{{ plat_key }}:</div>
-        <div style="white-space:pre-wrap;font-size:.88rem;line-height:1.55;
+{% else %}
+{# post / article #}
+<div style="margin-bottom:.8rem;">
+    {% set plat_texts = content.texts_parsed.get(item.platform, {}) %}
+    {% if plat_texts %}
+        {% if plat_texts.text %}
+        <div style="white-space:pre-wrap;font-size:.86rem;line-height:1.55;
                     background:var(--bg3);border:1px solid var(--border);
-                    border-radius:var(--radius);padding:.75rem 1rem;
-                    max-height:300px;overflow-y:auto;">{{ plat_val.text or plat_val }}</div>
+                    border-radius:var(--radius);padding:.65rem .9rem;
+                    max-height:280px;overflow-y:auto;">{{ plat_texts.text }}</div>
         {% endif %}
-        {% endfor %}
+        {% if plat_texts.caption %}
+        <div style="margin-top:.4rem;white-space:pre-wrap;font-size:.83rem;color:var(--text2);">
+            {{ plat_texts.caption }}
+        </div>
         {% endif %}
-    </div>
+    {% else %}
+    {# Показать хоть что-то из texts_parsed #}
+    {% for k, v in content.texts_parsed.items() %}{% if loop.first %}
+    <div style="font-size:.75rem;color:var(--text2);margin-bottom:.2rem;">{{ k }}:</div>
+    <div style="white-space:pre-wrap;font-size:.86rem;line-height:1.55;
+                background:var(--bg3);border:1px solid var(--border);
+                border-radius:var(--radius);padding:.65rem .9rem;
+                max-height:280px;overflow-y:auto;">{{ v.text if v is mapping else v }}</div>
+    {% endif %}{% endfor %}
     {% endif %}
+</div>
+{% endif %}
 
 {% endif %}<!-- /content -->
 
 <!-- Кнопки действий -->
-<div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.75rem;">
-    {% if item.status == 'generated' and content and not schedule %}
-    <!-- Опубликовать вручную — ведём на /calendar -->
-    <a href="/calendar" class="btn btn-primary btn-sm">📅 В календарь</a>
-    {% endif %}
+<div style="display:flex;gap:.45rem;flex-wrap:wrap;margin-top:.75rem;padding-top:.6rem;
+            border-top:1px solid var(--border);">
 
-    {% if item.status == 'generated' and schedule and schedule.status == 'planned' %}
-    <button type="button" class="btn btn-danger btn-sm"
-            hx-post="/queue/items/{{ item.id }}/cancel"
+    {# Перегенерировать (есть контент и пункт не ещё только генерируется) #}
+    {% if item.status in ('generated', 'error') %}
+    <button type="button" class="btn btn-warning btn-sm"
+            hx-post="/queue/items/{{ item.id }}/regen"
             hx-target="#modal-content"
-            hx-swap="innerHTML">
-        🗑 Снять с публикации
+            hx-swap="innerHTML"
+            hx-confirm="Удалить контент и поставить на перегенерацию?">
+        Перегенерировать
     </button>
     {% endif %}
 
-    {% if item.status == 'error' %}
-    <button type="button" class="btn btn-warning btn-sm"
-            hx-post="/queue/items/{{ item.id }}/retry"
+    {# Отменить публикацию (только planned) #}
+    {% if schedule and schedule.status == 'planned' %}
+    <button type="button" class="btn btn-secondary btn-sm"
+            hx-post="/queue/items/{{ item.id }}/cancel"
             hx-target="#modal-content"
-            hx-swap="innerHTML">
-        🔄 Повторить генерацию
+            hx-swap="innerHTML"
+            hx-confirm="Отменить публикацию? Контент останется.">
+        Отменить публикацию
+    </button>
+    {% endif %}
+
+    {# Удалить пункт (reject + удалить контент) #}
+    {% if item.status in ('generated', 'error') %}
+    <button type="button" class="btn btn-danger btn-sm"
+            hx-post="/queue/items/{{ item.id }}/delete"
+            hx-target="#modal-content"
+            hx-swap="innerHTML"
+            hx-confirm="Удалить контент насовсем? Пункт плана перейдёт в «Отклонено».">
+        Удалить
     </button>
     {% endif %}
 

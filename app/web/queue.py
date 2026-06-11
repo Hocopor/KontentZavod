@@ -1,60 +1,67 @@
 """
-Шахматка готового контента (этап 7, волна D).
+Шахматка готового контента + ручная публикация + "вне плана" (этап 7, волна D, v2).
 
 Роуты:
-    GET  /queue                              — шахматка сгенерированного контента
-    GET  /queue/items/{plan_item_id}/modal   — HTMX-модалка превью
-    POST /queue/items/{plan_item_id}/cancel  — снять с публикации (только planned)
-    POST /queue/items/{plan_item_id}/retry   — повторить генерацию (только error)
+    GET  /queue                                  — шахматка + ручная секция + вне плана
+    GET  /queue/items/{plan_item_id}/modal        — HTMX-модалка превью
+    POST /queue/items/{plan_item_id}/cancel       — снять с публикации (только planned)
+    POST /queue/items/{plan_item_id}/regen        — перегенерировать (→ approved, контент/файлы удалены)
+    POST /queue/items/{plan_item_id}/delete       — удалить контент + файлы → plan_item rejected
+    POST /queue/schedules/{schedule_id}/manual-done  — отметить ручную публикацию
+    POST /queue/orphans/{content_id}/delete       — удалить осиротевший контент
+
+Старый POST /retry оставлен для совместимости тестов.
 """
-import calendar
 import json
+import logging
+import shutil
+from pathlib import Path
 from datetime import date
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+import calendar as _calendar_mod
+
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app import catalog
+from app.config import settings
 from app.db import get_db
+from app.publishers.manual import mark_manual_done
 from app.templates_env import templates
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/queue")
 
-# Русские названия месяцев
+# ─── Словари ──────────────────────────────────────────────────────────────────
+
 _MONTH_NAMES = [
     "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
 ]
 
-# Метки статусов план-ячеек
-_STATUS_LABELS = {
-    "generating": "Генерируется",
-    "generated":  "Сгенерирован",
-    "error":      "Ошибка",
+_STATUS_LABELS: dict[str, str] = {
+    "generating":    "Генерируется",
+    "generated":     "Готово",
+    "error":         "Ошибка",
+    "planned":       "Запланировано",
+    "published":     "Опубликовано",
+    "manual_pending":"Ждёт ручной публикации",
+    "manual_done":   "Опубликовано вручную",
 }
 
-# Индикаторы статусов ячеек
-_STATUS_ICONS = {
-    "generating": "⏳",
-    "error":      "⚠",
+# dot-классы для легенды и ячеек
+_DOT_CLASS: dict[str, str] = {
+    "generating":    "dot-generating",
+    "error":         "dot-error",
+    "generated":     "dot-generated",
+    "planned":       "dot-planned",
+    "published":     "dot-published",
+    "manual_pending":"dot-manual",
+    "manual_done":   "dot-published",
+    "pub_error":     "dot-error",
 }
 
-# Индикаторы статусов публикации (schedule)
-_SCHEDULE_ICONS = {
-    "planned":        "📅",
-    "published":      "🚀",
-    "manual_pending": "✋",
-    "error":          "❌",
-}
-
-# Цвета статусов
-_STATUS_COLORS = {
-    "generating": "#38bdf8",
-    "generated":  "#6c63ff",
-    "error":      "#ef4444",
-}
-
-# Метки платформ
 _PLATFORM_LABELS = {
     "telegram":  "Telegram",
     "vk":        "ВКонтакте",
@@ -63,15 +70,37 @@ _PLATFORM_LABELS = {
     "dzen":      "Яндекс.Дзен",
 }
 
-# Статусы которые нельзя отменить
+# Статусы schedule, которые нельзя отменить
 _CANCEL_FORBIDDEN = {"published", "manual_pending", "manual_done", "publishing"}
 
+# ─── Вспомогательные: работа с файлами ───────────────────────────────────────
 
-# ─── Вспомогательные функции ──────────────────────────────────────────────────
+
+def _delete_content_files(content_id: int) -> None:
+    """Удалить media-папку и финальные файлы для content_id."""
+    data_dir = settings.data_dir_absolute
+    # media/{content_id}/
+    media_dir = data_dir / "media" / str(content_id)
+    if media_dir.exists():
+        shutil.rmtree(media_dir, ignore_errors=True)
+        logger.debug("queue: удалена media/%s/", content_id)
+    # videos/{content_id}.mp4 / .jpg
+    for ext in ("mp4", "jpg"):
+        p = data_dir / "videos" / f"{content_id}.{ext}"
+        if p.exists():
+            p.unlink(missing_ok=True)
+            logger.debug("queue: удалён videos/%s.%s", content_id, ext)
+    # images/{content_id}.jpg (story)
+    img = data_dir / "images" / f"{content_id}.jpg"
+    if img.exists():
+        img.unlink(missing_ok=True)
+        logger.debug("queue: удалён images/%s.jpg", content_id)
+
+
+# ─── Вспомогательные: БД ──────────────────────────────────────────────────────
 
 
 def _get_projects_list(db) -> list[dict]:
-    """Вернуть активные проекты."""
     rows = db.execute(
         "SELECT id, slug, name, stage, settings FROM projects WHERE status='active' ORDER BY name"
     ).fetchall()
@@ -79,42 +108,49 @@ def _get_projects_list(db) -> list[dict]:
 
 
 def _get_project_by_slug(db, slug: str):
-    """Вернуть строку projects или None."""
     return db.execute(
         "SELECT * FROM projects WHERE slug=? AND status='active'", (slug,)
     ).fetchone()
 
 
-def _get_schedule_for_content(db, content_id: int) -> dict | None:
-    """Вернуть первую schedule-запись для content_id или None."""
-    row = db.execute(
-        "SELECT id, status, published_url, error_text FROM schedule WHERE content_id=? LIMIT 1",
-        (content_id,),
-    ).fetchone()
-    return dict(row) if row else None
+def _get_item_or_404(db, item_id: int):
+    return db.execute("SELECT * FROM plan_items WHERE id=?", (item_id,)).fetchone()
+
+
+def _item_display_dot(db, item: dict) -> str:
+    """Вернуть ключ в _DOT_CLASS для ячейки шахматки."""
+    if item["status"] == "generating":
+        return "generating"
+    if item["status"] == "error":
+        return "error"
+    if item["status"] == "generated":
+        if item.get("content_id"):
+            srow = db.execute(
+                "SELECT status FROM schedule WHERE content_id=? LIMIT 1",
+                (item["content_id"],),
+            ).fetchone()
+            if srow:
+                s = srow["status"]
+                if s == "error":
+                    return "pub_error"
+                return s  # planned/published/manual_pending/manual_done
+        return "generated"
+    return item["status"]
 
 
 def _build_board_context(db, project: dict, year: int, month: int) -> dict:
-    """
-    Собрать контекст для шахматки готового контента:
-    - статусы: generating, generated, error
-    - строки: платформа → тип
-    - колонки: дни месяца
-    - в ячейке: индикатор по статусу
-    """
     today = date.today()
-    days_in_month = calendar.monthrange(year, month)[1]
+    days_in_month = _calendar_mod.monthrange(year, month)[1]
     days = list(range(1, days_in_month + 1))
 
     weekday_abbrs = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-    first_weekday = calendar.weekday(year, month, 1)
+    first_weekday = _calendar_mod.weekday(year, month, 1)
     day_headers = []
     for d in days:
         wd = (first_weekday + d - 1) % 7
         is_today = (year == today.year and month == today.month and d == today.day)
         day_headers.append({"day": d, "wd": weekday_abbrs[wd], "today": is_today})
 
-    # Загрузить plan_items со статусами generating/generated/error за месяц
     month_str = f"{year:04d}-{month:02d}"
     rows = db.execute(
         """
@@ -126,31 +162,18 @@ def _build_board_context(db, project: dict, year: int, month: int) -> dict:
         (project["id"], f"{month_str}-%"),
     ).fetchall()
 
-    items_by_key: dict[tuple, list] = {}  # (platform, content_type, day) -> list[dict]
-    platform_types: dict[str, set] = {}   # platform -> set of content_types
+    items_by_key: dict[tuple, list] = {}
+    platform_types: dict[str, set] = {}
 
     for row in rows:
         item = dict(row)
+        dot_key = _item_display_dot(db, item)
+        item["dot_class"] = _DOT_CLASS.get(dot_key, "dot-generated")
         item["status_label"] = _STATUS_LABELS.get(item["status"], item["status"])
-        item["status_color"] = _STATUS_COLORS.get(item["status"], "#888")
 
         ti = catalog.type_info(item["platform"], item["content_type"])
         item["type_label"] = ti["label"] if ti else item["content_type"]
 
-        # Индикатор ячейки
-        if item["status"] in ("generating", "error"):
-            item["cell_icon"] = _STATUS_ICONS[item["status"]]
-        else:
-            # generated: смотрим schedule
-            sched = None
-            if item["content_id"]:
-                sched = _get_schedule_for_content(db, item["content_id"])
-            if sched:
-                item["cell_icon"] = _SCHEDULE_ICONS.get(sched["status"], "✓")
-            else:
-                item["cell_icon"] = "✓"
-
-        # День из даты
         day_part = item["date"][8:10]
         try:
             day_int = int(day_part)
@@ -161,7 +184,6 @@ def _build_board_context(db, project: dict, year: int, month: int) -> dict:
         items_by_key.setdefault(key, []).append(item)
         platform_types.setdefault(item["platform"], set()).add(item["content_type"])
 
-    # Упорядоченные строки шахматки
     platform_order = ["telegram", "vk", "youtube", "instagram", "dzen"]
     rows_data = []
     for plat in platform_order:
@@ -174,8 +196,7 @@ def _build_board_context(db, project: dict, year: int, month: int) -> dict:
             ti = catalog.type_info(plat, ctype)
             cells = []
             for d in days:
-                key = (plat, ctype, d)
-                cells.append(items_by_key.get(key, []))
+                cells.append(items_by_key.get((plat, ctype, d), []))
             type_rows.append({
                 "content_type": ctype,
                 "type_label": ti["label"] if ti else ctype,
@@ -187,7 +208,6 @@ def _build_board_context(db, project: dict, year: int, month: int) -> dict:
             "type_rows": type_rows,
         })
 
-    # Навигация по месяцам
     prev_month = month - 1 if month > 1 else 12
     prev_year = year if month > 1 else year - 1
     next_month = month + 1 if month < 12 else 1
@@ -206,13 +226,80 @@ def _build_board_context(db, project: dict, year: int, month: int) -> dict:
         "next_month_str": next_month_str,
         "today": today,
         "status_labels": _STATUS_LABELS,
-        "status_colors": _STATUS_COLORS,
+        "dot_class": _DOT_CLASS,
     }
 
 
-def _get_item_or_404(db, item_id: int):
-    """Вернуть plan_item или None."""
-    return db.execute("SELECT * FROM plan_items WHERE id=?", (item_id,)).fetchone()
+def _get_manual_pending(db, project_id: int) -> list[dict]:
+    """Вернуть список schedule со status=manual_pending для проекта."""
+    rows = db.execute(
+        """
+        SELECT s.id AS schedule_id, s.platform, s.planned_at, s.status,
+               c.id AS content_id, c.type, c.title, c.texts, c.files
+          FROM schedule s
+          JOIN content c ON c.id = s.content_id
+         WHERE s.status = 'manual_pending'
+           AND c.project_id = ?
+         ORDER BY s.planned_at ASC
+        """,
+        (project_id,),
+    ).fetchall()
+
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["texts_parsed"] = json.loads(item["texts"]) if item["texts"] else {}
+        except (json.JSONDecodeError, TypeError):
+            item["texts_parsed"] = {}
+        try:
+            item["files_parsed"] = json.loads(item["files"]) if item["files"] else {}
+        except (json.JSONDecodeError, TypeError):
+            item["files_parsed"] = {}
+        item["platform_label"] = _PLATFORM_LABELS.get(item["platform"], item["platform"])
+        # Текст для копирования: instagram берёт caption
+        texts = item["texts_parsed"]
+        plat = item["platform"]
+        if plat == "instagram":
+            item["copy_text"] = (
+                texts.get("instagram", {}).get("caption")
+                or texts.get("instagram", {}).get("text")
+                or next(
+                    (v.get("text", "") for v in texts.values() if isinstance(v, dict)),
+                    ""
+                )
+            )
+        else:
+            item["copy_text"] = (
+                texts.get(plat, {}).get("text")
+                or next(
+                    (v.get("text", "") for v in texts.values() if isinstance(v, dict)),
+                    ""
+                )
+            )
+        result.append(item)
+    return result
+
+
+def _get_orphan_content(db) -> list[dict]:
+    """
+    Вернуть контент без связанного plan_item (осиротевший).
+    Это контент старого флоу или после удаления plan_item.
+    """
+    rows = db.execute(
+        """
+        SELECT c.id, c.project_id, c.type, c.title, c.status, c.created_at,
+               p.name AS project_name
+          FROM content c
+          JOIN projects p ON p.id = c.project_id
+         WHERE NOT EXISTS (
+               SELECT 1 FROM plan_items pi WHERE pi.content_id = c.id
+               )
+           AND c.status NOT IN ('rejected')
+         ORDER BY c.created_at DESC
+        """,
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ─── Роуты ────────────────────────────────────────────────────────────────────
@@ -224,30 +311,21 @@ async def queue_board(
     project: str = "",
     month: str = "",
 ):
-    """
-    Главная страница шахматки готового контента.
-    ?project=slug&month=YYYY-MM
-    """
+    """Главная страница: шахматка + ручная публикация + вне плана."""
     today = date.today()
-
-    # Разобрать month=YYYY-MM
     year = today.year
     month_int = today.month
     if month:
         try:
             parts = month.split("-")
-            year = int(parts[0])
-            month_int = int(parts[1])
-            year = max(2020, min(2099, year))
-            month_int = max(1, min(12, month_int))
+            year = max(2020, min(2099, int(parts[0])))
+            month_int = max(1, min(12, int(parts[1])))
         except (ValueError, IndexError):
-            year = today.year
-            month_int = today.month
+            year, month_int = today.year, today.month
 
     with get_db() as db:
         all_projects = _get_projects_list(db)
 
-        # Если передан конкретный slug — проверить сразу, независимо от списка
         if project:
             proj_row = _get_project_by_slug(db, project)
             if proj_row is None:
@@ -255,7 +333,6 @@ async def queue_board(
         else:
             proj_row = None
 
-        # Пустое состояние: нет проектов
         if not all_projects:
             return templates.TemplateResponse(request, "queue/index.html", {
                 "all_projects": [],
@@ -269,10 +346,12 @@ async def queue_board(
                 "next_month_str": f"{year:04d}-{(month_int + 1) if month_int < 12 else 1:02d}",
                 "today": today,
                 "status_labels": _STATUS_LABELS,
-                "status_colors": _STATUS_COLORS,
+                "dot_class": _DOT_CLASS,
+                "manual_items": [],
+                "orphan_content": [],
+                "enable_scheduler": settings.ENABLE_SCHEDULER,
             })
 
-        # Если slug не передан — выбрать проект по умолчанию (running или первый)
         if proj_row is None:
             for p in all_projects:
                 if p["stage"] == "running":
@@ -281,8 +360,12 @@ async def queue_board(
             if proj_row is None:
                 proj_row = db.execute("SELECT * FROM projects WHERE id=?", (all_projects[0]["id"],)).fetchone()
 
-        ctx = _build_board_context(db, dict(proj_row), year, month_int)
+        proj_dict = dict(proj_row)
+        ctx = _build_board_context(db, proj_dict, year, month_int)
         ctx["all_projects"] = all_projects
+        ctx["manual_items"] = _get_manual_pending(db, proj_dict["id"])
+        ctx["orphan_content"] = _get_orphan_content(db)
+        ctx["enable_scheduler"] = settings.ENABLE_SCHEDULER
 
     return templates.TemplateResponse(request, "queue/index.html", ctx)
 
@@ -297,20 +380,16 @@ async def queue_item_modal(request: Request, plan_item_id: int):
 
         item = dict(row)
         item["status_label"] = _STATUS_LABELS.get(item["status"], item["status"])
-        item["status_color"] = _STATUS_COLORS.get(item["status"], "#888")
-
         ti = catalog.type_info(item["platform"], item["content_type"])
         item["type_label"] = ti["label"] if ti else item["content_type"]
         item["platform_label"] = _PLATFORM_LABELS.get(item["platform"], item["platform"])
 
-        # Контент
         content = None
         schedule = None
         if item["content_id"]:
             crow = db.execute("SELECT * FROM content WHERE id=?", (item["content_id"],)).fetchone()
             if crow:
                 content = dict(crow)
-                # Распарсить texts и files JSON
                 try:
                     content["texts_parsed"] = json.loads(content["texts"]) if content["texts"] else {}
                 except (json.JSONDecodeError, TypeError):
@@ -320,27 +399,25 @@ async def queue_item_modal(request: Request, plan_item_id: int):
                 except (json.JSONDecodeError, TypeError):
                     content["files_parsed"] = {}
 
-                # schedule
                 srow = db.execute(
                     "SELECT * FROM schedule WHERE content_id=? LIMIT 1",
                     (item["content_id"],),
                 ).fetchone()
                 if srow:
                     schedule = dict(srow)
+                    schedule["status_label"] = _STATUS_LABELS.get(schedule["status"], schedule["status"])
 
     return templates.TemplateResponse(request, "queue/_modal.html", {
         "item": item,
         "content": content,
         "schedule": schedule,
+        "status_labels": _STATUS_LABELS,
     })
 
 
 @router.post("/items/{plan_item_id}/cancel", response_class=HTMLResponse)
 async def queue_item_cancel(plan_item_id: int):
-    """
-    Снять с публикации: найти schedule по content_id,
-    если status='planned' → DELETE. Иначе — 422.
-    """
+    """Снять с публикации: schedule status=planned → DELETE."""
     with get_db() as db:
         row = _get_item_or_404(db, plan_item_id)
         if row is None:
@@ -348,10 +425,7 @@ async def queue_item_cancel(plan_item_id: int):
 
         item = dict(row)
         if not item["content_id"]:
-            return HTMLResponse(
-                "Нет связанного контента для отмены публикации",
-                status_code=422,
-            )
+            return HTMLResponse("Нет связанного контента", status_code=422)
 
         srow = db.execute(
             "SELECT id, status FROM schedule WHERE content_id=? LIMIT 1",
@@ -378,11 +452,92 @@ async def queue_item_cancel(plan_item_id: int):
     return HTMLResponse("Публикация отменена", status_code=200)
 
 
+@router.post("/items/{plan_item_id}/regen", response_class=HTMLResponse)
+async def queue_item_regen(request: Request, plan_item_id: int):
+    """
+    Перегенерировать контент:
+    удалить content + файлы + schedule → plan_item → approved (фабрика подберёт).
+    """
+    with get_db() as db:
+        row = _get_item_or_404(db, plan_item_id)
+        if row is None:
+            return HTMLResponse("Пункт плана не найден", status_code=404)
+
+        item = dict(row)
+        content_id = item.get("content_id")
+
+        if content_id:
+            # Удалить schedule
+            db.execute("DELETE FROM schedule WHERE content_id=?", (content_id,))
+            # Удалить content
+            db.execute("DELETE FROM content WHERE id=?", (content_id,))
+
+        # Сбросить plan_item → approved
+        db.execute(
+            """
+            UPDATE plan_items
+            SET status='approved', error_text=NULL, content_id=NULL,
+                updated_at=datetime('now')
+            WHERE id=?
+            """,
+            (plan_item_id,),
+        )
+
+    # Удалить файлы (после закрытия соединения)
+    if content_id:
+        _delete_content_files(content_id)
+
+    return HTMLResponse(
+        "<div class='alert alert-info'>Поставлено на перегенерацию. "
+        "Фабрика подберёт при следующем тике.</div>"
+        "<button type='button' class='btn btn-secondary btn-sm' onclick='closeModal()'>Закрыть</button>",
+        status_code=200,
+    )
+
+
+@router.post("/items/{plan_item_id}/delete", response_class=HTMLResponse)
+async def queue_item_delete(request: Request, plan_item_id: int):
+    """
+    Удалить контент + файлы + schedule → plan_item → rejected.
+    Контент больше не вернётся.
+    """
+    with get_db() as db:
+        row = _get_item_or_404(db, plan_item_id)
+        if row is None:
+            return HTMLResponse("Пункт плана не найден", status_code=404)
+
+        item = dict(row)
+        content_id = item.get("content_id")
+
+        if content_id:
+            db.execute("DELETE FROM schedule WHERE content_id=?", (content_id,))
+            db.execute("DELETE FROM content WHERE id=?", (content_id,))
+
+        db.execute(
+            """
+            UPDATE plan_items
+            SET status='rejected', error_text=NULL, content_id=NULL,
+                updated_at=datetime('now')
+            WHERE id=?
+            """,
+            (plan_item_id,),
+        )
+
+    if content_id:
+        _delete_content_files(content_id)
+
+    return HTMLResponse(
+        "<div class='alert alert-warning'>Контент удалён, пункт плана отклонён.</div>"
+        "<button type='button' class='btn btn-secondary btn-sm' onclick='closeModal()'>Закрыть</button>",
+        status_code=200,
+    )
+
+
 @router.post("/items/{plan_item_id}/retry", response_class=HTMLResponse)
 async def queue_item_retry(plan_item_id: int):
     """
-    Повторить генерацию: plan_item status='error' → 'approved',
-    error_text=NULL, content_id=NULL. Для других статусов — 422.
+    Повторить генерацию: plan_item status='error' → 'approved'.
+    Обратная совместимость с тестами волны D.
     """
     with get_db() as db:
         row = _get_item_or_404(db, plan_item_id)
@@ -406,3 +561,49 @@ async def queue_item_retry(plan_item_id: int):
         )
 
     return HTMLResponse("Поставлено на повторную генерацию", status_code=200)
+
+
+@router.post("/schedules/{schedule_id}/manual-done", response_class=HTMLResponse)
+async def queue_manual_done(
+    request: Request,
+    schedule_id: int,
+    published_url: str = Form(default=""),
+):
+    """Отметить ручную публикацию выполненной."""
+    with get_db() as db:
+        srow = db.execute(
+            "SELECT id, status FROM schedule WHERE id=?", (schedule_id,)
+        ).fetchone()
+        if srow is None:
+            return HTMLResponse("Запись расписания не найдена", status_code=404)
+        if srow["status"] not in ("manual_pending",):
+            return HTMLResponse(
+                f"Ожидается статус manual_pending, текущий: {srow['status']}",
+                status_code=422,
+            )
+
+    mark_manual_done(schedule_id, published_url.strip())
+
+    return HTMLResponse(
+        "<div class='alert alert-info' style='font-size:.9rem;'>Опубликовано вручную ✓</div>",
+        status_code=200,
+    )
+
+
+@router.post("/orphans/{content_id}/delete", response_class=HTMLResponse)
+async def queue_orphan_delete(content_id: int):
+    """Удалить осиротевший контент (без plan_item) + файлы + schedule."""
+    with get_db() as db:
+        crow = db.execute("SELECT id FROM content WHERE id=?", (content_id,)).fetchone()
+        if crow is None:
+            return HTMLResponse("Контент не найден", status_code=404)
+
+        db.execute("DELETE FROM schedule WHERE content_id=?", (content_id,))
+        db.execute("DELETE FROM content WHERE id=?", (content_id,))
+
+    _delete_content_files(content_id)
+
+    return HTMLResponse(
+        f"<span style='color:var(--text2);font-size:.85rem;'>Контент #{content_id} удалён</span>",
+        status_code=200,
+    )

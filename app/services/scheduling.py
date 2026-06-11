@@ -5,7 +5,7 @@ schedule_content()  — создать запись в calendar (schedule).
 process_due()       — один тик планировщика: обработать все просроченные записи.
 """
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from app.db import get_db
 from app.publishers.base import PublishDeferred, PublishError, publish
@@ -15,8 +15,19 @@ logger = logging.getLogger(__name__)
 # ─── Вспомогательные функции ──────────────────────────────────────────────────
 
 
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)  # SQLite хранит без tzinfo
+def _now_local() -> datetime:
+    """
+    Текущее локальное время сервера (без tzinfo — SQLite хранит наивные строки).
+
+    planned_at сохраняется как «дата + time_slot» из плана, т.е. это локальное
+    намерение пользователя. Сравниваем с тем же локальным «сейчас», чтобы
+    избежать рассинхрона UTC vs. локаль (например, UTC+3 на mako-play).
+    """
+    return datetime.now()
+
+
+# Алиас для обратной совместимости с тестами, которые патчат _now_utc
+_now_utc = _now_local
 
 
 # ─── Планирование ─────────────────────────────────────────────────────────────
@@ -97,7 +108,7 @@ def process_due(now: datetime | None = None) -> None:
     Вызывается из APScheduler каждую минуту И напрямую из тестов.
     """
     if now is None:
-        now = _now_utc()
+        now = _now_local()
 
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 

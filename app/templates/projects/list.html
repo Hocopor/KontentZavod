@@ -17,6 +17,16 @@
     {% endif %}
 {% endmacro %}
 
+{% macro stage_chip(p) %}
+    {% if p.stage == 'running' %}
+    <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green); font-size:.75rem;">В работе</span>
+    {% elif p.stage == 'paused' %}
+    <span class="badge" style="background:rgba(245,158,11,.15);color:var(--yellow); font-size:.75rem;">Пауза</span>
+    {% else %}
+    <span class="badge" style="background:rgba(148,163,184,.1);color:var(--text2); font-size:.75rem;">Черновик</span>
+    {% endif %}
+{% endmacro %}
+
 {% if active %}
 <div class="section-title">Активные ({{ active|length }})</div>
 <div style="display:grid; gap:.75rem;">
@@ -28,6 +38,7 @@
                 <a href="/projects/{{ p.slug }}" style="color:var(--text); font-weight:600; font-size:1.05rem; text-decoration:none;">
                     {{ p.name }}
                 </a>
+                {{ stage_chip(p) }}
                 {% for pl in item.enabled_platforms %}
                     {{ platform_badge(pl) }}
                 {% endfor %}

@@ -1,6 +1,9 @@
 """
-Тесты pipeline: генерация идей, сценариев, веб-роуты.
+Тесты pipeline: генерация идей и сценариев (юнит-тесты функций).
 Все тесты работают с FAKE_LLM=1 (задаётся в conftest.patch_env).
+
+Веб-роуты /generate и секция «Идеи» на странице проекта удалены (старый флоу).
+Здесь только юнит-тесты pipeline-функций: generate_ideas, generate_script.
 """
 import json
 import uuid
@@ -17,8 +20,6 @@ import app.config as cfg_module
 # monkeypatch.setenv("FAKE_LLM", "1") из conftest.patch_env (autouse=True)
 # достаточно — все модули (llm, db и др.), держащие ссылку на singleton settings,
 # автоматически видят актуальное значение без дополнительного патчинга.
-#
-# Фикстура ensure_fake_llm больше не нужна и удалена.
 
 
 # ─── Вспомогательные фикстуры ─────────────────────────────────────────────────
@@ -297,103 +298,3 @@ class TestGenerateScript:
         _, idea_id = db_idea
         content_id = script_module.generate_script(idea_id)
         assert content_id > 0
-
-
-# ─── 3. Веб-роуты ─────────────────────────────────────────────────────────────
-
-
-class TestWebRoutes:
-    def _create_project(self, client) -> str:
-        """Создаёт проект через веб и возвращает slug."""
-        name = f"Веб-тест {_unique_slug()}"
-        resp = client.post(
-            "/projects/new",
-            data={
-                "name": name,
-                "description": "Описание",
-                "audience": "Тестовая аудитория",
-                "tone": "Нейтральный",
-                "goals": "Тестирование",
-                "cta": "Нажми сюда",
-                "themes": "Тема1, Тема2",
-                "forbidden": "Запрет",
-                "extra": "",
-            },
-            follow_redirects=False,
-        )
-        location = resp.headers.get("location", "")
-        slug = location.rstrip("/").split("/")[-1]
-        return slug
-
-    def test_generate_ideas_returns_200_and_ideas_in_db(self, client):
-        slug = self._create_project(client)
-
-        with get_db() as db:
-            proj = db.execute("SELECT id FROM projects WHERE slug=?", (slug,)).fetchone()
-        project_id = proj["id"]
-
-        resp = client.post(f"/projects/{slug}/ideas/generate")
-        assert resp.status_code == 200
-
-        with get_db() as db:
-            count = db.execute(
-                "SELECT COUNT(*) FROM ideas WHERE project_id=?", (project_id,)
-            ).fetchone()[0]
-        assert count > 0
-
-    def test_manual_idea_added(self, client):
-        slug = self._create_project(client)
-
-        resp = client.post(
-            f"/projects/{slug}/ideas/add",
-            data={"text": "Ручная тестовая идея"},
-        )
-        assert resp.status_code == 200
-
-        with get_db() as db:
-            proj = db.execute("SELECT id FROM projects WHERE slug=?", (slug,)).fetchone()
-            idea = db.execute(
-                "SELECT * FROM ideas WHERE project_id=? AND source='manual'",
-                (proj["id"],),
-            ).fetchone()
-
-        assert idea is not None
-        assert idea["text"] == "Ручная тестовая идея"
-        assert idea["status"] == "new"
-
-    def test_generate_ideas_for_unknown_project(self, client):
-        resp = client.post("/projects/nonexistent-slug/ideas/generate")
-        assert resp.status_code == 404
-
-    def test_script_creates_content(self, client):
-        slug = self._create_project(client)
-
-        with get_db() as db:
-            proj = db.execute("SELECT id FROM projects WHERE slug=?", (slug,)).fetchone()
-            project_id = proj["id"]
-            for platform in ("telegram", "vk"):
-                db.execute(
-                    """
-                    INSERT OR REPLACE INTO project_platforms (project_id, platform, enabled, mode)
-                    VALUES (?, ?, 1, 'auto')
-                    """,
-                    (project_id, platform),
-                )
-
-        with get_db() as db:
-            cur = db.execute(
-                "INSERT INTO ideas (project_id, text, source, status) VALUES (?,?,?,?)",
-                (project_id, "Тестовая идея", "manual", "new"),
-            )
-            idea_id = cur.lastrowid
-
-        resp = client.post(f"/ideas/{idea_id}/script")
-        # Либо 200 (HTMX-фрагмент), либо редирект 303
-        assert resp.status_code in (200, 303)
-
-        with get_db() as db:
-            content = db.execute(
-                "SELECT * FROM content WHERE project_id=?", (project_id,)
-            ).fetchone()
-        assert content is not None
-        assert content["status"] == "text_review"

@@ -331,16 +331,6 @@ def _build_detail_context(slug: str) -> dict | None:
             "SELECT COUNT(*) FROM content WHERE project_id=?", (project["id"],)
         ).fetchone()[0]
 
-        ideas = db.execute(
-            "SELECT * FROM ideas WHERE project_id=? ORDER BY created_at DESC",
-            (project["id"],),
-        ).fetchall()
-
-        draft_count = db.execute(
-            "SELECT COUNT(*) FROM content WHERE project_id=? AND status='text_review'",
-            (project["id"],),
-        ).fetchone()[0]
-
     project_dict = dict(project)
     completeness = _profile_completeness(project_dict)
 
@@ -364,8 +354,6 @@ def _build_detail_context(slug: str) -> dict | None:
         "platforms": platform_data,
         "completeness": completeness,
         "content_count": content_count,
-        "ideas": [dict(i) for i in ideas],
-        "draft_count": draft_count,
     }
 
 

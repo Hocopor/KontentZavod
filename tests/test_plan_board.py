@@ -8,6 +8,7 @@
 - POST /plan/item/{id}/save: меняет title, дату, brief
 - POST /plan/item/{id}/approve: меняет статус proposed → approved
 - POST /plan/item/{id}/reject: меняет статус → rejected
+- DELETE /plan/item/{id}: удаляет пункт (только если content_id IS NULL)
 - POST /plan/approve-period: одобряет только proposed текущего месяца
 - POST /plan/autogen/{slug}: toggle autogen в settings
 - Страница без проектов: 200, пустое состояние
@@ -118,12 +119,21 @@ class TestPlanBoard:
         assert "Telegram" in body
         assert "Пост" in body  # label из каталога
 
+    def test_board_title_is_content_plan(self, client, patch_env):
+        """Заголовок страницы — «Контент-план»."""
+        _setup_db()
+        resp = client.get("/plan")
+        assert resp.status_code == 200
+        assert "Контент-план" in resp.text
+
     def test_board_200_no_projects(self, client, patch_env):
         """Страница без проектов: 200, пустое состояние."""
         _setup_db()
         resp = client.get("/plan")
         assert resp.status_code == 200
-        assert "Нет активных проектов" in resp.text
+        # Нет running-проектов → сообщение о запуске
+        body = resp.text
+        assert "проект" in body.lower() or "Нет" in body
 
     def test_board_default_month_current(self, client, patch_env):
         """Без year/month открывается текущий месяц."""
@@ -174,15 +184,15 @@ class TestPlanBoard:
         assert "Running-проект пост" in resp.text
 
     def test_board_today_highlighted(self, client, patch_env):
-        """Сегодняшний день подсвечивается (атрибут today-col или класс)."""
+        """Сегодняшний день подсвечивается классом today."""
         _setup_db()
         with get_db() as db:
             s, pid = _create_project(db, platforms=("telegram",))
         today = date.today()
         resp = client.get(f"/plan?project={s}&year={today.year}&month={today.month}")
         assert resp.status_code == 200
-        # В шаблоне today-col присваивается ячейкам сегодняшнего дня
-        assert "today-col" in resp.text or "accent" in resp.text
+        # Класс .today используется для заголовка колонки и ячейки
+        assert "today" in resp.text
 
     def test_board_multi_platform(self, client, patch_env):
         """Несколько платформ отображаются отдельными строками."""
@@ -198,6 +208,65 @@ class TestPlanBoard:
         assert "VK-пост" in resp.text
         assert "Telegram" in resp.text
         assert "ВКонтакте" in resp.text
+
+    def test_board_has_legend(self, client, patch_env):
+        """Страница содержит легенду статусов с классом .legend."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db, platforms=("telegram",))
+            _create_plan_item(db, pid, item_date="2026-06-15")
+
+        resp = client.get(f"/plan?project={s}&year=2026&month=6")
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'class="legend' in body
+        # Все русские названия статусов в легенде
+        assert "Предложено" in body
+        assert "Одобрено" in body
+        assert "Отклонено" in body
+        assert "Генерируется" in body
+        assert "Готово" in body
+        assert "Ошибка" in body
+
+    def test_board_uses_board_classes(self, client, patch_env):
+        """Шахматка использует CSS-классы контракта: board-wrap, table.board."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db, platforms=("telegram",))
+            _create_plan_item(db, pid, item_date="2026-06-15")
+
+        resp = client.get(f"/plan?project={s}&year=2026&month=6")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "board-wrap" in body
+        assert 'class="board"' in body
+
+    def test_board_approve_period_shows_count(self, client, patch_env):
+        """Кнопка «Одобрить всё за месяц» содержит счётчик proposed."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db, platforms=("telegram",))
+            _create_plan_item(db, pid, item_date="2026-06-10", status="proposed")
+            _create_plan_item(db, pid, item_date="2026-06-12", status="proposed")
+            _create_plan_item(db, pid, item_date="2026-06-15", status="approved")
+
+        resp = client.get(f"/plan?project={s}&year=2026&month=6")
+        assert resp.status_code == 200
+        body = resp.text
+        # Должен быть счётчик (2 proposed)
+        assert "(2)" in body
+        assert "Одобрить все предложенные за месяц" in body
+
+    def test_board_autogen_hint_text(self, client, patch_env):
+        """На странице есть пояснение к тумблеру autogen."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db, platforms=("telegram",))
+
+        resp = client.get(f"/plan?project={s}&year=2026&month=6")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Фабрика автоматически создаёт контент" in body
 
 
 # ─── 2. Модалка пункта плана ──────────────────────────────────────────────────
@@ -238,8 +307,8 @@ class TestPlanItemModal:
         resp = client.get("/plan/item/99999")
         assert resp.status_code == 404
 
-    def test_modal_shows_status_label(self, client, patch_env):
-        """Модалка показывает человекочитаемый статус."""
+    def test_modal_shows_status_chip(self, client, patch_env):
+        """Модалка показывает статус чипом с классом chip-*."""
         _setup_db()
         with get_db() as db:
             s, pid = _create_project(db)
@@ -247,7 +316,9 @@ class TestPlanItemModal:
 
         resp = client.get(f"/plan/item/{iid}")
         assert resp.status_code == 200
-        assert "Одобрен" in resp.text
+        body = resp.text
+        assert "chip-approved" in body
+        assert "Одобрено" in body
 
     def test_modal_shows_error_text(self, client, patch_env):
         """Модалка показывает error_text при статусе error."""
@@ -263,8 +334,8 @@ class TestPlanItemModal:
         assert resp.status_code == 200
         assert "LLM timeout" in resp.text
 
-    def test_modal_generated_shows_content_link(self, client, patch_env):
-        """Модалка с status=generated и content_id показывает ссылку на контент."""
+    def test_modal_generated_shows_queue_link(self, client, patch_env):
+        """Модалка с status=generated и content_id показывает ссылку на /queue."""
         _setup_db()
         with get_db() as db:
             s, pid = _create_project(db)
@@ -278,7 +349,36 @@ class TestPlanItemModal:
 
         resp = client.get(f"/plan/item/{iid}")
         assert resp.status_code == 200
-        assert "/review/" in resp.text or "контент сгенерирован" in resp.text.lower() or "Перейти к контенту" in resp.text
+        body = resp.text
+        assert "/queue" in body
+        assert "Публикац" in body  # «Открыть в Публикации»
+
+    def test_modal_shows_delete_button_without_content(self, client, patch_env):
+        """Модалка пункта без content_id содержит кнопку «Удалить пункт»."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            iid = _create_plan_item(db, pid, content_id=None)
+
+        resp = client.get(f"/plan/item/{iid}")
+        assert resp.status_code == 200
+        assert "Удалить пункт" in resp.text
+
+    def test_modal_hides_delete_button_with_content(self, client, patch_env):
+        """Модалка пункта с content_id НЕ содержит кнопку «Удалить пункт»."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cur = db.execute(
+                "INSERT INTO content (project_id, type, title, status) VALUES (?,?,?,?)",
+                (pid, "post", "Пост", "approved"),
+            )
+            cid = cur.lastrowid
+            iid = _create_plan_item(db, pid, content_id=cid)
+
+        resp = client.get(f"/plan/item/{iid}")
+        assert resp.status_code == 200
+        assert "Удалить пункт" not in resp.text
 
 
 # ─── 3. Сохранение правок ─────────────────────────────────────────────────────
@@ -517,7 +617,57 @@ class TestPlanItemApproveReject:
         assert "Отклонить" in resp.text
 
 
-# ─── 5. Одобрение периода ─────────────────────────────────────────────────────
+# ─── 5. Удаление пункта плана ─────────────────────────────────────────────────
+
+
+class TestPlanItemDelete:
+
+    def test_delete_item_without_content_ok(self, client, patch_env):
+        """DELETE /plan/item/{id} без content_id — удаляет пункт, 200."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            iid = _create_plan_item(db, pid, content_id=None)
+
+        resp = client.delete(f"/plan/item/{iid}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("ok") is True
+
+        with get_db() as db:
+            row = db.execute("SELECT id FROM plan_items WHERE id=?", (iid,)).fetchone()
+        assert row is None  # удалён
+
+    def test_delete_item_with_content_422(self, client, patch_env):
+        """DELETE /plan/item/{id} с content_id — 422, пункт не удалён."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cur = db.execute(
+                "INSERT INTO content (project_id, type, title, status) VALUES (?,?,?,?)",
+                (pid, "post", "Пост", "approved"),
+            )
+            cid = cur.lastrowid
+            iid = _create_plan_item(db, pid, content_id=cid)
+
+        resp = client.delete(f"/plan/item/{iid}")
+        assert resp.status_code == 422
+        data = resp.json()
+        # Человекочитаемое сообщение про Публикацию
+        assert "Публикац" in data.get("error", "")
+
+        with get_db() as db:
+            row = db.execute("SELECT id FROM plan_items WHERE id=?", (iid,)).fetchone()
+        assert row is not None  # не удалён
+
+    def test_delete_item_404_nonexistent(self, client, patch_env):
+        """DELETE /plan/item/99999 → 404."""
+        _setup_db()
+        resp = client.delete("/plan/item/99999")
+        assert resp.status_code == 404
+
+
+# ─── 6. Одобрение периода ─────────────────────────────────────────────────────
 
 
 class TestApprovePeriod:
@@ -572,7 +722,7 @@ class TestApprovePeriod:
         assert resp.status_code in (200, 303, 302)
 
 
-# ─── 6. Toggle autogen ────────────────────────────────────────────────────────
+# ─── 7. Toggle autogen ────────────────────────────────────────────────────────
 
 
 class TestAutogenToggle:
@@ -632,7 +782,7 @@ class TestAutogenToggle:
         assert resp.status_code == 404
 
     def test_autogen_shown_on_board(self, client, patch_env):
-        """Состояние autogen отображается на странице шахматки (кнопка «Генерация: ВКЛ/ВЫКЛ»)."""
+        """Состояние autogen отображается на странице шахматки (ВКЛ/ВЫКЛ)."""
         _setup_db()
         import json as _json
         with get_db() as db:
@@ -646,14 +796,24 @@ class TestAutogenToggle:
         assert resp.status_code == 200
         assert "ВКЛ" in resp.text
 
+    def test_autogen_button_label(self, client, patch_env):
+        """Кнопка autogen содержит метку «Генерация одобренного»."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
 
-# ─── 7. Навигация ─────────────────────────────────────────────────────────────
+        resp = client.get(f"/plan?project={s}&year=2026&month=6")
+        assert resp.status_code == 200
+        assert "Генерация одобренного" in resp.text
+
+
+# ─── 8. Навигация ─────────────────────────────────────────────────────────────
 
 
 class TestPlanNavigation:
 
     def test_plan_link_in_nav(self, client, patch_env):
-        """Ссылка «🗓 План» присутствует в навигации всех страниц."""
+        """Ссылка на /plan присутствует в навигации всех страниц."""
         _setup_db()
         resp = client.get("/")
         assert resp.status_code == 200

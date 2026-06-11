@@ -2,20 +2,21 @@
 Шахматка согласования контент-плана (этап 7, волна C).
 
 Роуты:
-    GET  /plan                          — страница-шахматка
-    GET  /plan/item/{id}                — HTMX-фрагмент модалки
-    POST /plan/item/{id}/save           — сохранить правки (title, дата, brief)
-    POST /plan/item/{id}/approve        — одобрить пункт плана
-    POST /plan/item/{id}/reject         — отклонить пункт плана
-    POST /plan/approve-period           — одобрить все proposed за месяц
-    POST /plan/autogen/{slug}           — toggle autogen в settings проекта
+    GET    /plan                          — страница-шахматка
+    GET    /plan/item/{id}                — HTMX-фрагмент модалки
+    POST   /plan/item/{id}/save           — сохранить правки (title, дата, brief)
+    POST   /plan/item/{id}/approve        — одобрить пункт плана
+    POST   /plan/item/{id}/reject         — отклонить пункт плана
+    DELETE /plan/item/{id}                — удалить пункт (только если content_id IS NULL)
+    POST   /plan/approve-period           — одобрить все proposed за месяц
+    POST   /plan/autogen/{slug}           — toggle autogen в settings проекта
 """
 import calendar
 import json
 from datetime import date
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app import catalog
 from app.db import get_db, get_project_settings
@@ -31,11 +32,11 @@ _MONTH_NAMES = [
 
 # Русские метки статусов план-ячеек
 _STATUS_LABELS = {
-    "proposed":   "Предложен",
-    "approved":   "Одобрен",
-    "rejected":   "Отклонён",
+    "proposed":   "Предложено",
+    "approved":   "Одобрено",
+    "rejected":   "Отклонено",
     "generating": "Генерируется",
-    "generated":  "Сгенерирован",
+    "generated":  "Готово",
     "error":      "Ошибка",
 }
 
@@ -70,11 +71,32 @@ def _get_projects_list(db) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _get_running_projects_count(db) -> int:
+    """Вернуть количество running-проектов."""
+    row = db.execute(
+        "SELECT COUNT(*) as cnt FROM projects WHERE status='active' AND stage='running'"
+    ).fetchone()
+    return row["cnt"] if row else 0
+
+
 def _get_project_by_slug(db, slug: str):
     """Вернуть строку projects или None."""
     return db.execute(
         "SELECT * FROM projects WHERE slug=? AND status='active'", (slug,)
     ).fetchone()
+
+
+def _count_proposed_in_month(db, project_id: int, year: int, month: int) -> int:
+    """Количество proposed пунктов в указанном месяце."""
+    month_str = f"{year:04d}-{month:02d}"
+    row = db.execute(
+        """
+        SELECT COUNT(*) as cnt FROM plan_items
+        WHERE project_id=? AND date LIKE ? AND status='proposed'
+        """,
+        (project_id, f"{month_str}-%"),
+    ).fetchone()
+    return row["cnt"] if row else 0
 
 
 def _build_board_context(db, project: dict, year: int, month: int) -> dict:
@@ -188,6 +210,9 @@ def _build_board_context(db, project: dict, year: int, month: int) -> dict:
     # Настройки проекта (autogen / паузы)
     settings = get_project_settings(project.get("settings"))
 
+    # Количество proposed за месяц (для счётчика у кнопки)
+    proposed_count = _count_proposed_in_month(db, project["id"], year, month)
+
     # Навигация месяца
     prev_month = month - 1 if month > 1 else 12
     prev_year = year if month > 1 else year - 1
@@ -204,6 +229,7 @@ def _build_board_context(db, project: dict, year: int, month: int) -> dict:
         "settings": settings,
         "status_labels": _STATUS_LABELS,
         "status_colors": _STATUS_COLORS,
+        "proposed_count": proposed_count,
         "prev_year": prev_year,
         "prev_month": prev_month,
         "next_year": next_year,
@@ -265,11 +291,13 @@ async def plan_board(
 
     with get_db() as db:
         all_projects = _get_projects_list(db)
+        running_count = _get_running_projects_count(db)
 
         if not all_projects:
             return templates.TemplateResponse(request, "plan/board.html", {
                 "all_projects": [],
                 "project": None,
+                "running_count": running_count,
                 "year": year,
                 "month": month,
                 "month_name": _MONTH_NAMES[month],
@@ -278,6 +306,7 @@ async def plan_board(
                 "settings": {},
                 "status_labels": _STATUS_LABELS,
                 "status_colors": _STATUS_COLORS,
+                "proposed_count": 0,
                 "prev_year": year if month > 1 else year - 1,
                 "prev_month": month - 1 if month > 1 else 12,
                 "next_year": year if month < 12 else year + 1,
@@ -300,6 +329,7 @@ async def plan_board(
 
         ctx = _build_board_context(db, dict(proj_row), year, month)
         ctx["all_projects"] = all_projects
+        ctx["running_count"] = running_count
 
     return templates.TemplateResponse(request, "plan/board.html", ctx)
 
@@ -427,6 +457,29 @@ async def plan_item_reject(request: Request, item_id: int):
         return _render_modal(request, db, item_id)
 
 
+@router.delete("/item/{item_id}", response_class=JSONResponse)
+async def plan_item_delete(request: Request, item_id: int):
+    """
+    Удалить пункт плана.
+    Разрешено только если content_id IS NULL (контент ещё не создан).
+    Если контент уже создан — 422 с человекочитаемым сообщением.
+    """
+    with get_db() as db:
+        row = _get_item_or_404(db, item_id)
+        if row is None:
+            return JSONResponse({"error": "Пункт плана не найден"}, status_code=404)
+
+        if row["content_id"] is not None:
+            return JSONResponse(
+                {"error": "Контент уже создан — управляйте им во вкладке Публикация"},
+                status_code=422,
+            )
+
+        db.execute("DELETE FROM plan_items WHERE id=?", (item_id,))
+
+    return JSONResponse({"ok": True}, status_code=200)
+
+
 @router.post("/approve-period", response_class=HTMLResponse)
 async def approve_period(
     request: Request,
@@ -459,7 +512,7 @@ async def approve_period(
 @router.post("/autogen/{slug}", response_class=HTMLResponse)
 async def toggle_autogen(request: Request, slug: str):
     """
-    Toggle autogen в settings проекта (кнопка «⚡ Генерация одобренного»).
+    Toggle autogen в settings проекта (кнопка «⚡ Генерация одобренного: ВКЛ/ВЫКЛ»).
     Включить — autogen=1, повторный нажатие — autogen=0.
     """
     with get_db() as db:

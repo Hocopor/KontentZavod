@@ -14,10 +14,6 @@ from app.db import init_db
 from app.scheduler import start_scheduler, stop_scheduler
 from app.web.dashboard import router as dashboard_router
 from app.web.projects import router as projects_router
-from app.web.generate import router as generate_router
-from app.web.review import router as review_router
-from app.web.calendar import router as calendar_router
-from app.web.manual import router as manual_router
 from app.web.files import router as files_router
 from app.web.analytics import router as analytics_router
 from app.web.launch import router as launch_router
@@ -57,10 +53,6 @@ def create_app() -> FastAPI:
     # Роутеры
     app.include_router(dashboard_router)
     app.include_router(projects_router)
-    app.include_router(generate_router)
-    app.include_router(review_router)
-    app.include_router(calendar_router)
-    app.include_router(manual_router)
     app.include_router(files_router)
     app.include_router(analytics_router)
     app.include_router(launch_router)

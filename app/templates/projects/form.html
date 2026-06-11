@@ -17,36 +17,37 @@
     Или нажмите «Заполнить вручную», чтобы ввести все поля самостоятельно.
 </div>
 
-<div class="card" style="margin-bottom:1.5rem;">
-    <h2>О проекте</h2>
-
-    <div class="form-group">
-        <label for="step1-name">Название проекта <span style="color:var(--red)">*</span></label>
-        <input type="text" id="step1-name" name="step1_name" required
-               placeholder="Например: Фитнес-клуб «Сила», ИП Иванов — ремонт квартир"
-               value="{{ step1.name if step1 else '' }}" />
-    </div>
-
-    <div class="form-group">
-        <label for="step1-description">Описание (что за продукт/услуга)</label>
-        <textarea id="step1-description" name="step1_description"
-                  placeholder="Кратко: что предлагаете, кому, чем отличаетесь от конкурентов.">{{ step1.description if step1 else '' }}</textarea>
-    </div>
-
-    <div class="form-group">
-        <label for="step1-goals">Цель продвижения</label>
-        <textarea id="step1-goals" name="step1_goals" style="min-height:60px;"
-                  placeholder="Чего хотите достичь через контент? Продажи, подписки, охват, репутация?">{{ step1.goals if step1 else '' }}</textarea>
-    </div>
-</div>
-
-{# Спиннер-индикатор для HTMX #}
-<div id="profile-spinner" style="display:none; margin-bottom:1rem;" class="text-sm">
-    <span class="text-muted">⏳ ИИ составляет профиль…</span>
-</div>
-
-{# Контейнер, куда HTMX вставит полную форму #}
+{# Весь шаг 1 — внутри #full-form-container: ответ generate-profile заменяет его целиком,
+   чтобы поля название/описание/цель не дублировались #}
 <div id="full-form-container">
+    <div class="card" style="margin-bottom:1.5rem;">
+        <h2>О проекте</h2>
+
+        <div class="form-group">
+            <label for="step1-name">Название проекта <span style="color:var(--red)">*</span></label>
+            <input type="text" id="step1-name" name="name" required
+                   placeholder="Например: Фитнес-клуб «Сила», ИП Иванов — ремонт квартир"
+                   value="{{ step1.name if step1 else '' }}" />
+        </div>
+
+        <div class="form-group">
+            <label for="step1-description">Описание (что за продукт/услуга)</label>
+            <textarea id="step1-description" name="description"
+                      placeholder="Кратко: что предлагаете, кому, чем отличаетесь от конкурентов.">{{ step1.description if step1 else '' }}</textarea>
+        </div>
+
+        <div class="form-group">
+            <label for="step1-goals">Цель продвижения</label>
+            <textarea id="step1-goals" name="goals" style="min-height:60px;"
+                      placeholder="Чего хотите достичь через контент? Продажи, подписки, охват, репутация?">{{ step1.goals if step1 else '' }}</textarea>
+        </div>
+    </div>
+
+    {# Спиннер-индикатор для HTMX #}
+    <div id="profile-spinner" style="display:none; margin-bottom:1rem;" class="text-sm">
+        <span class="text-muted">⏳ ИИ составляет профиль…</span>
+    </div>
+
     <div class="flex gap-sm">
         <button type="button" class="btn btn-primary"
                 hx-post="/projects/generate-profile"
