@@ -11,7 +11,10 @@
 </div>
 {% endif %}
 
-<div class="stats-grid">
+<div class="stats-grid" id="dash-live"
+     hx-get="/" hx-trigger="every 30s"
+     hx-select="#dash-live" hx-swap="morph:outerHTML"
+     hx-sync="this:replace">
     <div class="stat-card">
         <a href="/projects" style="text-decoration:none;">
             <div class="stat-num" style="{% if projects_running > 0 %}color:var(--green);{% endif %}">{{ projects_running }}</div>

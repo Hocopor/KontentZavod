@@ -82,7 +82,8 @@
 <!-- Форма добавления прокси -->
 <div class="add-form">
     <h2 style="margin-bottom:1rem;">Добавить прокси</h2>
-    <form method="post" action="/proxies/add">
+    <form hx-post="/proxies/add" hx-target="#proxy-table-area" hx-swap="morph:innerHTML"
+          hx-on::after-request="if(event.detail.successful)this.reset()">
         <div class="form-group">
             <label>URL прокси (один или несколько, каждый с новой строки)</label>
             <textarea name="raw_urls" rows="4"
@@ -101,89 +102,8 @@
 </div>
 
 <!-- Таблица прокси -->
-{% if proxies %}
-<div class="card">
-    <table class="proxy-table">
-        <thead>
-            <tr>
-                <th>Метка</th>
-                <th>URL</th>
-                <th>Вкл</th>
-                <th>Ошибки</th>
-                <th>Последний ОК</th>
-                <th>Последняя ошибка</th>
-                <th>Действия</th>
-            </tr>
-        </thead>
-        <tbody>
-        {% for p in proxies %}
-        <tr>
-            <td>{{ p.label or "—" }}</td>
-            <td class="url-cell">{{ p.url_masked }}</td>
-            <td>
-                <!-- Тумблер включения/выключения -->
-                <form method="post" action="/proxies/{{ p.id }}/toggle" style="display:inline;">
-                    <button type="submit" class="toggle {% if p.enabled %}checked{% endif %}"
-                            style="background: {% if p.enabled %}var(--accent){% else %}var(--bg3){% endif %};
-                                   border-color: {% if p.enabled %}var(--accent){% else %}var(--border){% endif %};
-                                   width:38px;height:20px;border-radius:999px;cursor:pointer;
-                                   border:1px solid;position:relative;"
-                            title="{% if p.enabled %}Выключить{% else %}Включить{% endif %}">
-                        <span style="position:absolute;top:2px;
-                                     left:{% if p.enabled %}22px{% else %}2px{% endif %};
-                                     width:14px;height:14px;border-radius:50%;
-                                     background:{% if p.enabled %}#fff{% else %}var(--text2){% endif %};
-                                     transition:left .2s;"></span>
-                    </button>
-                </form>
-            </td>
-            <td>
-                {% if p.fail_count == 0 %}
-                <span class="fail-badge fail-0">0</span>
-                {% elif p.fail_count <= 2 %}
-                <span class="fail-badge fail-1">{{ p.fail_count }}</span>
-                {% else %}
-                <span class="fail-badge fail-bad">{{ p.fail_count }}</span>
-                {% endif %}
-            </td>
-            <td class="text-sm text-muted">
-                {% if p.last_ok_at %}{{ p.last_ok_at[:16] }}{% else %}—{% endif %}
-            </td>
-            <td class="text-sm" style="color:var(--red);max-width:200px;word-break:break-word;">
-                {% if p.last_error %}{{ p.last_error[:100] }}{% else %}—{% endif %}
-            </td>
-            <td>
-                <div class="actions-cell">
-                    <!-- Кнопка «Проверить» — HTMX, результат вставляется в #check-result-N -->
-                    <button class="btn btn-secondary btn-sm"
-                            hx-post="/proxies/{{ p.id }}/check"
-                            hx-target="#check-{{ p.id }}"
-                            hx-swap="innerHTML"
-                            hx-indicator="#check-{{ p.id }}">
-                        Проверить
-                    </button>
-                    <span id="check-{{ p.id }}" class="text-sm text-muted">
-                        <!-- сюда HTMX вставит бейдж результата -->
-                    </span>
-                    <!-- Кнопка «Удалить» с подтверждением -->
-                    <form method="post" action="/proxies/{{ p.id }}/delete" style="display:inline;"
-                          onsubmit="return confirm('Удалить прокси {{ p.label or p.url_masked }}?')">
-                        <button type="submit" class="btn btn-danger btn-sm">Удалить</button>
-                    </form>
-                </div>
-            </td>
-        </tr>
-        {% endfor %}
-        </tbody>
-    </table>
+<div id="proxy-table-area">
+{% include "proxies/_table.html" %}
 </div>
-{% else %}
-<div class="card">
-    <p class="text-muted text-sm" style="text-align:center;padding:2rem 0;">
-        Прокси не добавлены. Запросы к Telegram Bot API идут напрямую.<br>
-        <span style="font-size:.8rem;">Если сервер находится в РФ, api.telegram.org недоступен без прокси.</span>
-    </p>
-</div>
-{% endif %}
 
 {% endblock %}

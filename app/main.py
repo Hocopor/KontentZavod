@@ -22,6 +22,7 @@ from app.web.plan import router as plan_router
 from app.web.queue import router as queue_router
 from app.web.proxies import router as proxies_router
 from app.web.tts_preview import router as tts_preview_router
+from app.web.partials import router as partials_router
 
 
 @asynccontextmanager
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(queue_router)
     app.include_router(proxies_router)
     app.include_router(tts_preview_router)
+    app.include_router(partials_router)
 
     return app
 

@@ -1,0 +1,4 @@
+{# OOB-обновление бейджей навигации (этап 8.8). Разметка спанов ОБЯЗАНА совпадать
+   с инлайн-версией в base.html (те же id/классы), иначе morph/OOB не сойдётся. #}
+<span id="nav-badge-plan" hx-swap-oob="true" class="nav-badge nav-badge-yellow"{% if _nav.nav_plan_proposed == 0 %} hidden{% endif %}>{{ _nav.nav_plan_proposed }}</span>
+<span id="nav-badge-manual" hx-swap-oob="true" class="nav-badge nav-badge-orange"{% if _nav.nav_manual_count == 0 %} hidden{% endif %}>{{ _nav.nav_manual_count }}</span>

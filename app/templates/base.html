@@ -6,6 +6,8 @@
     <title>{% block title %}КонтентЗавод{% endblock %}</title>
     <!-- htmx — локальная копия (app/static/htmx.min.js) -->
     <script src="/static/htmx.min.js"></script>
+    <!-- idiomorph — morph-свопы для live-обновления без скачков (этап 8.8) -->
+    <script src="/static/idiomorph-ext.min.js"></script>
     <style>
         /* ── Сброс и базовые переменные ── */
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -272,6 +274,15 @@
         .badge-yt   { background: rgba(255,0,0,.15); color: #f87171; }
         .badge-ig   { background: rgba(225,48,108,.15); color: #f9a8d4; }
         .badge-dzen { background: rgba(255,102,0,.15); color: #fdba74; }
+        .nav-badge {
+            border-radius: 999px;
+            font-size: .7rem;
+            font-weight: 700;
+            padding: .05rem .4rem;
+            line-height: 1.4;
+        }
+        .nav-badge-yellow { background: var(--yellow); color: #000; }
+        .nav-badge-orange { background: #f97316; color: #fff; }
 
         /* ── Stat-cards на дашборде ── */
         .stats-grid {
@@ -485,7 +496,7 @@
     </style>
     {% block head %}{% endblock %}
 </head>
-<body>
+<body hx-ext="morph">
     <nav>
         <a href="/" class="nav-brand">КонтентЗавод</a>
         {% set _nav = get_nav_counts() %}
@@ -502,26 +513,18 @@
             <a href="/plan" {% if request.url.path.startswith("/plan") %}class="active"{% endif %}
                style="display:inline-flex;align-items:center;gap:.35rem;">
                 Контент-план
-                {% if _nav.nav_plan_proposed > 0 %}
-                <span style="background:var(--yellow);color:#000;border-radius:999px;
-                             font-size:.7rem;font-weight:700;padding:.05rem .4rem;line-height:1.4;">
-                    {{ _nav.nav_plan_proposed }}
-                </span>
-                {% endif %}
+                <span id="nav-badge-plan" class="nav-badge nav-badge-yellow"{% if _nav.nav_plan_proposed == 0 %} hidden{% endif %}>{{ _nav.nav_plan_proposed }}</span>
             </a>
             <a href="/queue" {% if request.url.path.startswith("/queue") %}class="active"{% endif %}
                style="display:inline-flex;align-items:center;gap:.35rem;">
                 Публикация
-                {% if _nav.nav_manual_count > 0 %}
-                <span style="background:#f97316;color:#fff;border-radius:999px;
-                             font-size:.7rem;font-weight:700;padding:.05rem .4rem;line-height:1.4;">
-                    {{ _nav.nav_manual_count }}
-                </span>
-                {% endif %}
+                <span id="nav-badge-manual" class="nav-badge nav-badge-orange"{% if _nav.nav_manual_count == 0 %} hidden{% endif %}>{{ _nav.nav_manual_count }}</span>
             </a>
             <a href="/analytics" {% if request.url.path.startswith("/analytics") %}class="active"{% endif %}>Аналитика</a>
             <a href="/proxies" {% if request.url.path.startswith("/proxies") %}class="active"{% endif %}>Прокси</a>
         </div>
+        <!-- Поллер бейджей навигации (этап 8.8): OOB-обновление каждые 30с -->
+        <span id="nav-poller" hx-get="/partials/nav-badges" hx-trigger="every 30s" hx-swap="none" style="display:none;"></span>
         {# Блок текущего проекта — перед часами #}
         <div class="nav-project" id="nav-project-block">
             <button type="button" class="nav-project-btn"

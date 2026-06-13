@@ -315,7 +315,11 @@ table.board td.row-head.type-header {
 <h1 style="margin-bottom:1rem;">Контент-план</h1>
 
 <!-- Зона флеша перегенерации (устойчивый id — hx-target) -->
-<div id="plan-board-area">
+<div id="plan-board-area"
+     hx-get="/plan{% if project %}?project={{ project.slug }}&year={{ year }}&month={{ month }}{% endif %}"
+     hx-trigger="every 15s"
+     hx-select="#plan-board-area" hx-swap="morph:outerHTML"
+     hx-sync="this:replace">
 {% if flash_html is defined and flash_html %}
 {{ flash_html | safe }}
 {% endif %}

@@ -415,10 +415,10 @@ card → ровно 1 слайд; carousel → 2–5 слайдов. goal=sell �
 ### 8.7 (P2) Авто-сбор метрик ✅ (2026-06-13, pytest 735/735)
 - [x] `[S]` collect_metrics: интервальный джоб раз в N часов (настройка `METRICS_INTERVAL_HOURS`, default 6, `jitter=300` от блока) вместо daily 03:00; кнопка «🔄 Обновить метрики» на /analytics (HTMX-фрагмент `analytics/_collect.html`, индикатор `.htmx-indicator`, `hx-disabled-elt` + серверный throttle 20с от дабл-клика). Синхронный роут `POST /analytics/collect` (collect_metrics блокирующий → threadpool). Тесты: TestCollectNow ×5.
 
-### 8.8 (P2) Живой UI без скачков страницы
+### 8.8 (P2) Живой UI без скачков страницы ✅ (2026-06-13, pytest 744/744)
 Жалоба: изменений не видно без F5; /proxies перезагружает страницу с прыжком вверх.
-- [ ] `[оркестратор]` Спроектировать: SSE (`EventSource` + endpoint на FastAPI, без вебсокетов — проще и хватает) либо HTMX-поллинг фрагментов с `hx-swap="morph"` (idiomorph) — выбрать одно решение для всех вкладок.
-- [ ] `[S]` Применить: /plan и /queue (статусы шахматок), /proxies (тумблеры без перезагрузки), дашборд (счётчики), бейджи навигации. Никаких прыжков скролла.
+- [x] `[оркестратор]` **РЕШЕНИЕ: HTMX-поллинг (НЕ SSE).** SSE отвергнут — SQLite+APScheduler не дают pub/sub, держать открытые соединения на 2 vCPU дорого, всё равно пришлось бы опрашивать БД. idiomorph (`idiomorph-ext.min.js` вендорнут в static, `hx-ext="morph"` на body) морфит только изменённый DOM → сохраняет скролл/фокус/открытые `<details>`, не трогает открытую модалку.
+- [x] `[оркестратор+S]` **Применено.** Крупные зоны (борд /plan `#plan-board-area`, борд /queue `#queue-live`, счётчики дашборда `#dash-live`) поллят СВОЙ GET-эндпоинт через `hx-select` + `hx-swap="morph:outerHTML"` + `hx-sync="this:replace"` (15с борды, 30с дашборд) — без новых эндпоинтов, морф поверх себя. Бейджи навигации — OOB-свопы: поллер `#nav-poller` → `GET /partials/nav-badges` (новый роутер app/web/partials.py, оркестратор) → `hx-swap-oob` спаны `#nav-badge-plan`/`#nav-badge-manual` (скрыты при 0). /proxies — тумблеры/удаление/добавление переведены с RedirectResponse на HTMX in-place (фрагмент `proxies/_table.html` морфом в `#proxy-table-area`) — это и убрало «прыжок вверх»; поллинга на /proxies нет (чтобы не стирать результаты «Проверить»). Тесты: tests/test_live_ui.py ×9.
 
 ### 8.9 (P3) Трендовая музыка через платформы (research)
 Хотелка: музыка не вшита в видео (права), а прикреплена средствами платформы (как при ручной публикации в IG/VK), трендовая, тихая.

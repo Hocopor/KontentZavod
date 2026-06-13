@@ -12,7 +12,7 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 
 from app.db import get_db
 from app.security import encrypt, decrypt
@@ -59,6 +59,15 @@ def _extract_host_port(url: str) -> str:
     return url[:40]
 
 
+def _render_table(request: Request, **extra) -> HTMLResponse:
+    """Рендер фрагмента таблицы прокси (HTMX-ответ для toggle/delete/add)."""
+    with get_db() as db:
+        proxies = _get_all_proxies(db)
+    return templates.TemplateResponse(
+        request, "proxies/_table.html", {"proxies": proxies, **extra}
+    )
+
+
 @router.get("", response_class=HTMLResponse)
 async def proxies_list(request: Request):
     """Страница со списком всех прокси."""
@@ -84,13 +93,7 @@ async def proxies_add(
     """
     urls = parse_proxy_input(raw_urls)
     if not urls:
-        with get_db() as db:
-            proxies = _get_all_proxies(db)
-        return templates.TemplateResponse(
-            request,
-            "proxies/index.html",
-            {"proxies": proxies, "error": "Не найдено валидных proxy-URL в введённых данных."},
-        )
+        return _render_table(request, add_error="Не найдено валидных proxy-URL в введённых данных.")
 
     added = 0
     skipped = 0
@@ -126,33 +129,29 @@ async def proxies_add(
             existing_hosts.add(host_port)
             added += 1
 
-    flash = f"Добавлено прокси: {added}."
+    msg = f"Добавлено прокси: {added}."
     if skipped:
-        flash += f" Пропущено дубликатов: {skipped}."
-
-    return RedirectResponse(
-        f"/proxies?flash={flash}",
-        status_code=303,
-    )
+        msg += f" Пропущено дубликатов: {skipped}."
+    return _render_table(request, add_result=msg)
 
 
 @router.post("/{proxy_id}/toggle")
-async def proxy_toggle(proxy_id: int):
+async def proxy_toggle(request: Request, proxy_id: int):
     """Переключает enabled (0 ↔ 1)."""
     with get_db() as db:
         db.execute(
             "UPDATE proxies SET enabled = 1 - enabled WHERE id = ?",
             (proxy_id,),
         )
-    return RedirectResponse("/proxies", status_code=303)
+    return _render_table(request)
 
 
 @router.post("/{proxy_id}/delete")
-async def proxy_delete(proxy_id: int):
+async def proxy_delete(request: Request, proxy_id: int):
     """Удаляет прокси из БД."""
     with get_db() as db:
         db.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
-    return RedirectResponse("/proxies", status_code=303)
+    return _render_table(request)
 
 
 @router.post("/{proxy_id}/check", response_class=HTMLResponse)

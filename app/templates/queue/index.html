@@ -257,6 +257,11 @@
 </div>
 
 <h1 style="margin-bottom:1rem;">Публикация</h1>
+<div id="queue-live"
+     hx-get="/queue{% if project %}?project={{ project.slug }}&month={{ year }}-{{ '%02d' % month }}{% endif %}"
+     hx-trigger="every 15s"
+     hx-select="#queue-live" hx-swap="morph:outerHTML"
+     hx-sync="this:replace">
 
 {% if not enable_scheduler %}
 <div class="alert alert-warning" style="margin-bottom:1.2rem;">
@@ -559,6 +564,7 @@
 {% endif %}
 
 {% endif %}<!-- /project -->
+</div><!-- /queue-live -->
 
 <script>
 function openModal(evt) {
