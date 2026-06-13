@@ -56,9 +56,8 @@ async def serve_story_slide(content_id: int, idx: int) -> Response:
 async def serve_story_image(content_id: int) -> Response:
     """Отдать первый слайд истории (или легаси story.jpg) для content_id."""
     media = settings.data_dir_absolute / "media" / str(content_id)
-    path = media / "slide_1.jpg"
-    if not path.exists():
-        path = media / "story.jpg"   # легаси-контент до волны 8.5A
-    if not path.exists():
-        return Response(status_code=404, content="Картинка не найдена")
-    return FileResponse(str(path), media_type="image/jpeg")
+    for name in ("slide_1.jpg", "post.jpg", "story.jpg"):
+        path = media / name
+        if path.exists():
+            return FileResponse(str(path), media_type="image/jpeg")
+    return Response(status_code=404, content="Картинка не найдена")

@@ -7,7 +7,8 @@
 Покрытие:
   - text-пункт → content type='post', texts своей платформы, schedule planned, item generated;
   - dzen text → manual_pending;
-  - story → файл картинки, files.image_path, schedule manual_pending;
+  - instagram story → файл картинки, files.image_path, schedule manual_pending;
+  - vk story → schedule planned (auto-публикация, этап 9.1B);
   - video → idea+content production, item generating; затем готовый рендер → schedule+generated;
   - видео-провал (3 попытки) → item error;
   - autogen=0 / gen_paused=1 / date за окном → не берёт;

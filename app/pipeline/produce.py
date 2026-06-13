@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # ─── Ленивый импорт рендера ───────────────────────────────────────────────────
 
 
-def _do_render(content_id: int, scene_audios, asset_paths, subs_path, music_path):
+def _do_render(content_id: int, scene_audios, asset_paths, subs_path, music_path, music_volume=None):
     """
     Обёртка вокруг render_video с ленивым импортом.
     Патчим её в тестах, чтобы не зависеть от наличия render.py.
@@ -49,7 +49,7 @@ def _do_render(content_id: int, scene_audios, asset_paths, subs_path, music_path
     """
     from app.pipeline.render import render_video  # noqa: PLC0415
 
-    return render_video(content_id, scene_audios, asset_paths, subs_path, music_path)
+    return render_video(content_id, scene_audios, asset_paths, subs_path, music_path, music_volume)
 
 
 # ─── Основная функция ─────────────────────────────────────────────────────────
@@ -142,6 +142,9 @@ def produce_video(content_id: int) -> None:
     tts_rate  = str(proj_settings.get("tts_rate",  "+0%"))
     tts_pitch = str(proj_settings.get("tts_pitch", "+0Hz"))
 
+    # Громкость фоновой музыки из настроек проекта
+    music_volume = float(proj_settings.get("music_volume", 0.12))
+
     scene_texts = [s["text"] for s in scenes]
 
     # Рабочая директория для медиафайлов этого контента
@@ -183,7 +186,7 @@ def produce_video(content_id: int) -> None:
         # 3e. Рендер (ленивый импорт)
         logger.info("produce_video: content_id=%d → рендер", content_id)
         video_path, preview_path = _do_render(
-            content_id, scene_audios, asset_paths, subs_path, music_path
+            content_id, scene_audios, asset_paths, subs_path, music_path, music_volume
         )
 
         # 3f. Очистка исходников

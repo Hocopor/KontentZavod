@@ -240,3 +240,21 @@ def test_text_post_keywords_fallback_to_image_prompt_words(db_with_project, monk
     assert fetch_image_calls[0] == ["word1", "word2", "word3", "word4", "word5"], (
         f"Фоллбэк должен давать первые 5 слов image_prompt: {fetch_image_calls[0]}"
     )
+
+
+def test_files_images_route_serves_post_jpg(patch_env):
+    """Регрессия 9.2: GET /files/images/{id}.jpg отдаёт картинку поста (post.jpg),
+    а не только слайд истории — раньше роут 404-ил для постов."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    media = cfg_module.settings.data_dir_absolute / "media" / "987654"
+    media.mkdir(parents=True, exist_ok=True)
+    (media / "post.jpg").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIFpostimage")
+
+    with TestClient(app) as c:
+        resp = c.get("/files/images/987654.jpg")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/jpeg")
+    assert resp.content.startswith(b"\xff\xd8\xff")

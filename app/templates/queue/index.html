@@ -433,11 +433,16 @@
 
         <!-- Текст для копирования -->
         {% if mi.copy_text %}
+        {% if mi.type == 'story' %}
+        <div style="font-size:.78rem;color:var(--text2);margin-bottom:.2rem;">📝 Внутренняя заметка (НЕ публикуется — у истории нет описания, весь текст на слайдах):</div>
+        {% endif %}
         <div class="copy-text-area" id="copy-text-{{ mi.schedule_id }}">{{ mi.copy_text }}</div>
+        {% if mi.type != 'story' %}
         <button type="button" class="btn btn-secondary btn-sm"
                 onclick="copyText('copy-text-{{ mi.schedule_id }}', this)">
             Скопировать текст
         </button>
+        {% endif %}
         {% endif %}
 
         <!-- Видео: плеер + скачать -->
@@ -467,7 +472,7 @@
             {% endfor %}
         </div>
         <div style="font-size:.78rem;color:var(--text2);margin-top:.3rem;">
-            Опубликуй слайды по порядку (1 → {{ mi.slide_indexes | length }}); подпись — кнопкой «Копировать текст» выше.
+            Опубликуй слайды по порядку (1 → {{ mi.slide_indexes | length }}). У истории НЕТ описания — весь текст уже на слайдах.
         </div>
         {% else %}
         <img src="/files/images/{{ mi.content_id }}.jpg" alt="story"
@@ -475,6 +480,10 @@
         <a href="/files/images/{{ mi.content_id }}.jpg" download
            class="btn btn-secondary btn-sm" style="margin-top:.4rem;">Скачать картинку</a>
         {% endif %}
+        {% elif mi.type in ('post', 'article') %}
+        <img src="/files/images/{{ mi.content_id }}.jpg" alt="картинка поста"
+             onerror="this.style.display='none'"
+             style="max-width:160px;border-radius:6px;background:#000;margin-top:.4rem;display:block;">
         {% endif %}
 
         <!-- Форма: URL + кнопка «Опубликовано» -->

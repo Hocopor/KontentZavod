@@ -635,6 +635,108 @@ class TestTogglePause:
         assert s["autogen"] == 0
 
 
+# ─── 6. music_volume: сохранение и clamp ──────────────────────────────────────
+
+
+class TestMusicVolumeSetting:
+    def test_music_volume_saves_valid(self, client, patch_env):
+        """music_volume=0.3 сохраняется как 0.3."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "music_volume": "0.3",
+            },
+        )
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            row = db.execute("SELECT settings FROM projects WHERE slug=?", (slug,)).fetchone()
+        s = get_project_settings(row["settings"])
+        assert abs(s["music_volume"] - 0.3) < 1e-9
+
+    def test_music_volume_clamps_above_max(self, client, patch_env):
+        """music_volume=0.9 clampится до 0.5."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "music_volume": "0.9",
+            },
+        )
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            row = db.execute("SELECT settings FROM projects WHERE slug=?", (slug,)).fetchone()
+        s = get_project_settings(row["settings"])
+        assert abs(s["music_volume"] - 0.5) < 1e-9
+
+    def test_music_volume_clamps_below_zero(self, client, patch_env):
+        """music_volume=-1 clampится до 0.0."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "music_volume": "-1",
+            },
+        )
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            row = db.execute("SELECT settings FROM projects WHERE slug=?", (slug,)).fetchone()
+        s = get_project_settings(row["settings"])
+        assert abs(s["music_volume"] - 0.0) < 1e-9
+
+    def test_music_volume_invalid_input_uses_default(self, client, patch_env):
+        """Мусорный music_volume → дефолт 0.12."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "music_volume": "not_a_number",
+            },
+        )
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            row = db.execute("SELECT settings FROM projects WHERE slug=?", (slug,)).fetchone()
+        s = get_project_settings(row["settings"])
+        assert abs(s["music_volume"] - 0.12) < 1e-9
+
+    def test_music_volume_default_in_project_settings(self, patch_env):
+        """DEFAULT_PROJECT_SETTINGS содержит music_volume=0.12."""
+        from app.db import DEFAULT_PROJECT_SETTINGS, get_project_settings
+
+        assert DEFAULT_PROJECT_SETTINGS["music_volume"] == 0.12
+        # get_project_settings(None) тоже возвращает дефолт
+        s = get_project_settings(None)
+        assert s["music_volume"] == 0.12
+
+
 # ─── 6. Интеграционный флоу ───────────────────────────────────────────────────
 
 

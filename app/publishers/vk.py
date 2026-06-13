@@ -42,6 +42,8 @@ VK_API_URL = "https://api.vk.com/method/wall.post"
 VK_VIDEO_SAVE_URL = "https://api.vk.com/method/video.save"
 VK_PHOTO_UPLOAD_SERVER_URL = "https://api.vk.com/method/photos.getWallUploadServer"
 VK_PHOTO_SAVE_URL = "https://api.vk.com/method/photos.saveWallPhoto"
+VK_STORIES_GET_UPLOAD_SERVER_URL = "https://api.vk.com/method/stories.getPhotoUploadServer"
+VK_STORIES_SAVE_URL = "https://api.vk.com/method/stories.save"
 VK_API_VERSION = "5.199"
 
 
@@ -68,6 +70,17 @@ def publish_vk(
 
     video_path: str | None = files.get("video_path") or None
     image_path: str | None = files.get("image_path") or None
+
+    # ─── Сторис (slides) — ВСЕГДА раньше video/image ─────────────────────────
+    slides = files.get("slides") or []
+    if isinstance(slides, list) and slides:
+        return _publish_story(
+            schedule_id=schedule_id,
+            credentials=credentials,
+            group_id=group_id,
+            slides=slides,
+            dry_run=dry_run,
+        )
 
     # ─── Видео-путь ───────────────────────────────────────────────────────────
     if video_path:
@@ -352,4 +365,116 @@ def _publish_post_with_photo(
     post_id = data["response"]["post_id"]
     published_url = f"https://vk.com/wall-{group_id}_{post_id}"
     logger.info("VK опубликовано с фото: %s", published_url)
+    return published_url
+
+
+# ─── Публикация историй (stories) ────────────────────────────────────────────
+
+
+def _publish_story(
+    schedule_id: int,
+    credentials: dict | None,
+    group_id: int | str,
+    slides: list,
+    dry_run: bool,
+) -> str:
+    """
+    Опубликовать историю VK из слайдов-картинок через VK Stories API.
+
+    Алгоритм для каждого слайда:
+      1. stories.getPhotoUploadServer — получить upload_url
+      2. POST файла на upload_url — получить upload_result
+      3. stories.save — сохранить историю, получить owner_id и story id
+
+    Текстовое описание в историю НЕ передаётся — истории VK не имеют caption.
+    Требует пользовательского user_token с правами stories+offline.
+    """
+    if dry_run:
+        payload: dict = {
+            "dry_run": True,
+            "platform": "vk",
+            "method": "stories.save",
+            "group_id": group_id,
+            "slides": list(slides),
+            "count": len(slides),
+        }
+        return dry_run_publish(schedule_id, "vk", payload)
+
+    # Реальный режим
+    user_token = (credentials or {}).get("user_token", "")
+    if not user_token:
+        raise PublishError(
+            "VK: для публикации истории нужен пользовательский токен (user_token) с правами "
+            "stories+offline — добавьте его в настройках площадки VK."
+        )
+    if not group_id:
+        raise PublishError("VK: group_id не задан в config")
+
+    first_owner_id: int | None = None
+    first_story_id: int | None = None
+
+    for slide in slides:
+        if not Path(slide).exists():
+            raise PublishError(f"VK: слайд не найден: {slide}")
+
+        try:
+            # 1. Получаем upload_url
+            resp_server = httpx.post(
+                VK_STORIES_GET_UPLOAD_SERVER_URL,
+                params={
+                    "access_token": user_token,
+                    "add_to_news": 1,
+                    "group_id": int(group_id),
+                    "v": VK_API_VERSION,
+                },
+                timeout=30,
+            )
+            server_data = resp_server.json()
+            if "error" in server_data:
+                err = server_data["error"]
+                raise PublishError(
+                    f"VK stories.getPhotoUploadServer ошибка "
+                    f"{err.get('error_code')}: {err.get('error_msg', 'нет описания')}"
+                )
+            upload_url = server_data["response"]["upload_url"]
+
+            # 2. Загружаем файл
+            with open(slide, "rb") as f:
+                up = httpx.post(upload_url, files={"file": f}, timeout=120)
+            up_data = up.json()
+            upload_result = up_data.get("response", {}).get("upload_result")
+            if not upload_result:
+                raise PublishError("VK stories: upload_result не получен")
+
+            # 3. Сохраняем историю
+            resp_save = httpx.post(
+                VK_STORIES_SAVE_URL,
+                params={
+                    "access_token": user_token,
+                    "upload_results": upload_result,
+                    "v": VK_API_VERSION,
+                },
+                timeout=30,
+            )
+            save_data = resp_save.json()
+            if "error" in save_data:
+                err = save_data["error"]
+                raise PublishError(
+                    f"VK stories.save ошибка "
+                    f"{err.get('error_code')}: {err.get('error_msg', 'нет описания')}"
+                )
+
+            story_item = save_data["response"]["items"][0]
+            owner_id = story_item["owner_id"]
+            story_id = story_item["id"]
+
+            if first_owner_id is None:
+                first_owner_id = owner_id
+                first_story_id = story_id
+
+        except httpx.HTTPError as exc:
+            raise PublishError(f"VK stories: сетевая ошибка — {exc}") from exc
+
+    published_url = f"https://vk.com/story{first_owner_id}_{first_story_id}"
+    logger.info("VK история опубликована (%d слайд(ов)): %s", len(slides), published_url)
     return published_url

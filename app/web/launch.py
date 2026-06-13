@@ -104,6 +104,12 @@ def _save_settings(db, project_id: int, form_data: dict) -> dict:
         except (ValueError, TypeError):
             return default
 
+    def _float(key: str, default: float) -> float:
+        try:
+            return float(form_data.get(key, default))
+        except (ValueError, TypeError):
+            return default
+
     plan_horizon_days = _clamp(_int("plan_horizon_days", 30), 7, 90)
     gen_lookahead_days = _clamp(_int("gen_lookahead_days", 3), 1, 14)
     retention_days = _clamp(_int("retention_days", 14), 3, 60)
@@ -131,6 +137,9 @@ def _save_settings(db, project_id: int, form_data: dict) -> dict:
     sub_highlight_color = _color("sub_highlight_color", "#ffe600")
     sub_outline_width   = _clamp(_int("sub_outline_width", 5), 1, 10)
 
+    # --- громкость фоновой музыки ---
+    music_volume = max(0.0, min(0.5, _float("music_volume", 0.12)))
+
     new_settings = {
         **cur_settings,
         "plan_horizon_days": plan_horizon_days,
@@ -143,6 +152,7 @@ def _save_settings(db, project_id: int, form_data: dict) -> dict:
         "sub_outline_color": sub_outline_color,
         "sub_highlight_color": sub_highlight_color,
         "sub_outline_width": sub_outline_width,
+        "music_volume": music_volume,
     }
 
     db.execute(

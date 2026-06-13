@@ -861,7 +861,122 @@ class TestQueueManualDone:
         assert "Мой красивый caption для Instagram" in resp.text
 
 
-# ─── 8. «Вне плана» (orphan content) ─────────────────────────────────────────
+# ─── 8. Reschedule (перенос даты/времени) ─────────────────────────────────────
+
+
+class TestReschedule:
+
+    def test_reschedule_planned_updates_datetime(self, client, patch_env):
+        """reschedule: planned schedule обновляет planned_at."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cid = _create_content(db, pid)
+            iid = _create_plan_item(db, pid, status="generated", content_id=cid)
+            sch_id = _create_schedule(db, cid, status="planned", planned_at="2026-06-15 10:00:00")
+
+        resp = client.post(
+            f"/queue/items/{iid}/reschedule",
+            data={"new_date": "2026-07-15", "new_time": "09:30"}
+        )
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            row = db.execute("SELECT planned_at FROM schedule WHERE id=?", (sch_id,)).fetchone()
+        assert row["planned_at"] == "2026-07-15 09:30:00"
+
+    def test_reschedule_manual_pending_updates_datetime(self, client, patch_env):
+        """reschedule: manual_pending schedule обновляет planned_at."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cid = _create_content(db, pid)
+            iid = _create_plan_item(db, pid, status="generated", content_id=cid)
+            sch_id = _create_schedule(db, cid, status="manual_pending", planned_at="2026-06-15 14:00:00")
+
+        resp = client.post(
+            f"/queue/items/{iid}/reschedule",
+            data={"new_date": "2026-07-20", "new_time": "16:45"}
+        )
+        assert resp.status_code == 200
+
+        with get_db() as db:
+            row = db.execute("SELECT planned_at FROM schedule WHERE id=?", (sch_id,)).fetchone()
+        assert row["planned_at"] == "2026-07-20 16:45:00"
+
+    def test_reschedule_published_returns_422(self, client, patch_env):
+        """reschedule: published schedule → 422."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cid = _create_content(db, pid)
+            iid = _create_plan_item(db, pid, status="generated", content_id=cid)
+            sch_id = _create_schedule(db, cid, status="published", planned_at="2026-06-15 10:00:00",
+                                    published_url="https://t.me/x/1")
+
+        resp = client.post(
+            f"/queue/items/{iid}/reschedule",
+            data={"new_date": "2026-07-15", "new_time": "09:30"}
+        )
+        assert resp.status_code == 422
+        # Проверим, что planned_at не изменился
+        with get_db() as db:
+            row = db.execute("SELECT planned_at FROM schedule WHERE id=?", (sch_id,)).fetchone()
+        assert row["planned_at"] == "2026-06-15 10:00:00"
+
+    def test_reschedule_invalid_date_returns_422(self, client, patch_env):
+        """reschedule: невалидная дата → 422."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cid = _create_content(db, pid)
+            iid = _create_plan_item(db, pid, status="generated", content_id=cid)
+            sch_id = _create_schedule(db, cid, status="planned")
+
+        resp = client.post(
+            f"/queue/items/{iid}/reschedule",
+            data={"new_date": "не-дата", "new_time": "09:30"}
+        )
+        assert resp.status_code == 422
+
+    def test_reschedule_no_content_returns_422(self, client, patch_env):
+        """reschedule: нет content_id → 422."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            iid = _create_plan_item(db, pid, status="generated", content_id=None)
+
+        resp = client.post(
+            f"/queue/items/{iid}/reschedule",
+            data={"new_date": "2026-07-15", "new_time": "09:30"}
+        )
+        assert resp.status_code == 422
+
+    def test_reschedule_no_schedule_returns_422(self, client, patch_env):
+        """reschedule: нет schedule → 422."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            cid = _create_content(db, pid)
+            iid = _create_plan_item(db, pid, status="generated", content_id=cid)
+
+        resp = client.post(
+            f"/queue/items/{iid}/reschedule",
+            data={"new_date": "2026-07-15", "new_time": "09:30"}
+        )
+        assert resp.status_code == 422
+
+    def test_reschedule_404_nonexistent_item(self, client, patch_env):
+        """reschedule: несуществующий plan_item → 404."""
+        _setup_db()
+        resp = client.post(
+            "/queue/items/99999/reschedule",
+            data={"new_date": "2026-07-15", "new_time": "09:30"}
+        )
+        assert resp.status_code == 404
+
+
+# ─── 9. «Вне плана» (orphan content) ─────────────────────────────────────────
 
 
 class TestQueueOrphans:

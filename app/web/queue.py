@@ -467,6 +467,41 @@ async def queue_item_cancel(plan_item_id: int):
     return HTMLResponse("Публикация отменена", status_code=200)
 
 
+@router.post("/items/{plan_item_id}/reschedule", response_class=HTMLResponse)
+async def queue_item_reschedule(
+    plan_item_id: int,
+    new_date: str = Form(...),
+    new_time: str = Form(...),
+):
+    """Перенести дату/время публикации без отмены. Только planned/manual_pending."""
+    from datetime import datetime
+    with get_db() as db:
+        row = _get_item_or_404(db, plan_item_id)
+        if row is None:
+            return HTMLResponse("Пункт плана не найден", status_code=404)
+        item = dict(row)
+        if not item["content_id"]:
+            return HTMLResponse("Нет связанного контента", status_code=422)
+        srow = db.execute(
+            "SELECT id, status FROM schedule WHERE content_id=? LIMIT 1",
+            (item["content_id"],),
+        ).fetchone()
+        if srow is None:
+            return HTMLResponse("Нет записи в расписании", status_code=422)
+        if srow["status"] not in ("planned", "manual_pending"):
+            return HTMLResponse(
+                f"Нельзя перенести публикацию со статусом «{srow['status']}»",
+                status_code=422,
+            )
+        try:
+            dt = datetime.strptime(f"{new_date.strip()} {new_time.strip()}", "%Y-%m-%d %H:%M")
+        except ValueError:
+            return HTMLResponse("Неверный формат даты или времени", status_code=422)
+        planned_at = dt.strftime("%Y-%m-%d %H:%M:%S")
+        db.execute("UPDATE schedule SET planned_at=? WHERE id=?", (planned_at, srow["id"]))
+    return HTMLResponse(f"✓ Перенесено на {new_date} {new_time}", status_code=200)
+
+
 @router.post("/items/{plan_item_id}/regen", response_class=HTMLResponse)
 async def queue_item_regen(request: Request, plan_item_id: int):
     """

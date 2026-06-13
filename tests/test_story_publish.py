@@ -1,17 +1,25 @@
 """
-Тесты волны 8.5B: раздача слайдов сторис по HTTP + ручная очередь.
+Тесты волны 8.5B + 9.1B: раздача слайдов сторис по HTTP + ручная очередь
++ автопубликация VK-сторис через Stories API.
 
 Покрывает:
 - GET /files/stories/{id}/{n}.jpg: 200 (файл есть) / 404 (файл отсутствует)
 - GET /files/images/{id}.jpg: отдаёт slide_1.jpg как первый слайд
 - _get_manual_pending: slide_indexes и copy_text для story
 - GET /queue/items/{id}/modal: слайды показываются для story со slides
+- publish_vk: dry-run сторис → outbox с method=stories.save, count, без caption
+- publish_vk: реальный режим с моком httpx → URL story{owner}_{id}
+- publish_vk: реальный режим без user_token → PublishError
+- publish_vk: несуществующий слайд → PublishError
+- catalog: vk.story publish==auto; instagram.story publish==manual
+- factory: vk-story schedule → planned (не manual_pending)
 """
 import json
 import os
 import shutil
 import uuid
 from pathlib import Path
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -253,3 +261,270 @@ class TestModalStorySlides:
         resp = client.get(f"/queue/items/{iid}/modal")
         assert resp.status_code == 200
         assert f"/files/images/{cid}.jpg" in resp.text
+
+
+# ─── 4. Каталог: vk.story==auto, instagram.story==manual ─────────────────────
+
+
+class TestCatalogStoryPublish:
+
+    def test_vk_story_publish_auto(self):
+        """catalog.type_info('vk','story')['publish'] == 'auto' после флипа 9.1B."""
+        from app.catalog import type_info
+        info = type_info("vk", "story")
+        assert info is not None
+        assert info["publish"] == "auto", (
+            f"vk.story должна быть auto, но сейчас: {info['publish']}"
+        )
+
+    def test_instagram_story_publish_manual(self):
+        """catalog.type_info('instagram','story')['publish'] == 'manual' (не трогали)."""
+        from app.catalog import type_info
+        info = type_info("instagram", "story")
+        assert info is not None
+        assert info["publish"] == "manual", (
+            f"instagram.story должна остаться manual, но сейчас: {info['publish']}"
+        )
+
+
+# ─── 5. publish_vk: dry-run сторис ───────────────────────────────────────────
+
+
+class TestPublishVkStoryDryRun:
+
+    def test_dry_run_stories_save_method(self, patch_env, tmp_path):
+        """dry_run=True с slides → outbox method=stories.save, count==2, нет caption/message."""
+        from app.publishers.vk import publish_vk
+
+        slide1 = tmp_path / "slide_1.jpg"
+        slide2 = tmp_path / "slide_2.jpg"
+        slide1.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 16)
+        slide2.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 16)
+
+        files = {
+            "slides": [str(slide1), str(slide2)],
+            "image_path": str(slide1),
+        }
+        texts = {"vk": {"text": "Карусель", "hashtags": ["#тест"]}}
+
+        url = publish_vk(
+            schedule_id=5001,
+            credentials=None,
+            config={"group_id": 123},
+            texts=texts,
+            files=files,
+            dry_run=True,
+        )
+
+        assert url == "dry-run://vk/5001"
+
+        outbox = cfg_module.settings.data_dir_absolute / "outbox" / "5001_vk.json"
+        assert outbox.exists(), "outbox-файл не создан"
+        payload = json.loads(outbox.read_text(encoding="utf-8"))
+
+        assert payload["method"] == "stories.save"
+        assert payload["count"] == 2
+        assert payload["dry_run"] is True
+        # Текстовое описание НЕ должно попасть в payload истории
+        for bad_key in ("message", "caption", "description", "text"):
+            assert bad_key not in payload, (
+                f"В payload сторис не должно быть ключа '{bad_key}'"
+            )
+
+    def test_dry_run_stories_slides_list(self, patch_env, tmp_path):
+        """Payload содержит slides — список переданных путей."""
+        from app.publishers.vk import publish_vk
+
+        slide1 = tmp_path / "s1.jpg"
+        slide1.write_bytes(b"\xff\xd8")
+
+        files = {"slides": [str(slide1)], "image_path": str(slide1)}
+        url = publish_vk(
+            schedule_id=5002,
+            credentials=None,
+            config={"group_id": 456},
+            texts={},
+            files=files,
+            dry_run=True,
+        )
+        outbox = cfg_module.settings.data_dir_absolute / "outbox" / "5002_vk.json"
+        payload = json.loads(outbox.read_text(encoding="utf-8"))
+        assert payload["slides"] == [str(slide1)]
+
+
+# ─── 6. publish_vk: реальный режим, моки httpx ───────────────────────────────
+
+
+class TestPublishVkStoryReal:
+
+    def _make_mock_response(self, json_data: dict) -> MagicMock:
+        m = MagicMock()
+        m.json.return_value = json_data
+        return m
+
+    def test_real_story_two_slides_returns_url(self, patch_env, tmp_path):
+        """
+        Реальный режим: 2 слайда → последовательность getPhotoUploadServer / upload / save
+        на каждый → возвращает URL первого story.
+        """
+        from app.publishers.vk import publish_vk
+        from app.publishers.base import PublishError
+
+        slide1 = tmp_path / "slide_1.jpg"
+        slide2 = tmp_path / "slide_2.jpg"
+        slide1.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 16)
+        slide2.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 16)
+
+        # httpx.post вызывается 3 раза на слайд = 6 раз всего
+        side_effects = [
+            # слайд 1
+            self._make_mock_response({"response": {"upload_url": "http://up1"}}),
+            self._make_mock_response({"response": {"upload_result": "RES1"}}),
+            self._make_mock_response({"response": {"items": [{"owner_id": -123, "id": 777}]}}),
+            # слайд 2
+            self._make_mock_response({"response": {"upload_url": "http://up2"}}),
+            self._make_mock_response({"response": {"upload_result": "RES2"}}),
+            self._make_mock_response({"response": {"items": [{"owner_id": -123, "id": 778}]}}),
+        ]
+
+        with patch("app.publishers.vk.httpx.post", side_effect=side_effects) as mock_post:
+            url = publish_vk(
+                schedule_id=5010,
+                credentials={"access_token": "AT", "user_token": "UT"},
+                config={"group_id": 123},
+                texts={"vk": {"text": "История", "hashtags": []}},
+                files={
+                    "slides": [str(slide1), str(slide2)],
+                    "image_path": str(slide1),
+                },
+                dry_run=False,
+            )
+
+        assert url == "https://vk.com/story-123_777"
+        assert mock_post.call_count == 6
+
+        # Проверяем что в stories.save НЕТ message/caption
+        save_calls = [mock_post.call_args_list[2], mock_post.call_args_list[5]]
+        for c in save_calls:
+            params = c.kwargs.get("params", c.args[0] if c.args else {})
+            if not params and c.args:
+                params = {}
+            # params передаётся как keyword arg
+            kwargs_params = c.kwargs.get("params", {})
+            for bad_key in ("message", "caption", "description"):
+                assert bad_key not in kwargs_params, (
+                    f"В stories.save не должно быть '{bad_key}', params={kwargs_params}"
+                )
+
+    def test_real_story_no_user_token_raises(self, patch_env, tmp_path):
+        """Реальный режим без user_token → PublishError с упоминанием user_token."""
+        from app.publishers.vk import publish_vk
+        from app.publishers.base import PublishError
+
+        slide = tmp_path / "s.jpg"
+        slide.write_bytes(b"\xff\xd8")
+
+        with pytest.raises(PublishError, match="user_token"):
+            publish_vk(
+                schedule_id=5020,
+                credentials={"access_token": "AT"},  # нет user_token
+                config={"group_id": 123},
+                texts={},
+                files={"slides": [str(slide)], "image_path": str(slide)},
+                dry_run=False,
+            )
+
+    def test_real_story_none_credentials_raises(self, patch_env, tmp_path):
+        """credentials=None → PublishError с упоминанием user_token."""
+        from app.publishers.vk import publish_vk
+        from app.publishers.base import PublishError
+
+        slide = tmp_path / "s.jpg"
+        slide.write_bytes(b"\xff\xd8")
+
+        with pytest.raises(PublishError, match="user_token"):
+            publish_vk(
+                schedule_id=5021,
+                credentials=None,
+                config={"group_id": 123},
+                texts={},
+                files={"slides": [str(slide)], "image_path": str(slide)},
+                dry_run=False,
+            )
+
+    def test_real_story_missing_slide_raises(self, patch_env, tmp_path):
+        """Несуществующий слайд-файл → PublishError с именем файла."""
+        from app.publishers.vk import publish_vk
+        from app.publishers.base import PublishError
+
+        nonexistent = str(tmp_path / "ghost.jpg")
+
+        with pytest.raises(PublishError, match="ghost.jpg"):
+            publish_vk(
+                schedule_id=5030,
+                credentials={"user_token": "UT"},
+                config={"group_id": 123},
+                texts={},
+                files={"slides": [nonexistent], "image_path": nonexistent},
+                dry_run=False,
+            )
+
+
+# ─── 7. Factory: vk-story → schedule planned ──────────────────────────────────
+
+
+class TestFactoryVkStoryPlanned:
+
+    def test_vk_story_schedule_is_planned(self, patch_env, tmp_path, monkeypatch):
+        """
+        Фабрика для VK-story создаёт schedule со status='planned' (не 'manual_pending').
+        После флипа vk.story→auto catalog возвращает publish='auto'.
+        """
+        import app.config as cfg_module
+        import app.db as db_module
+        from app.db import init_db, get_db
+        from app.services.factory import _create_schedule
+
+        init_db(cfg_module.settings.db_path_absolute)
+
+        with get_db() as db:
+            cur = db.execute(
+                """INSERT INTO projects
+                   (slug, name, description, audience, tone, goals, cta, themes, stage)
+                   VALUES (?, 'VK Story Test', 'Desc', 'ЦА', 'тон', 'цели', 'CTA', 'темы', 'running')""",
+                (f"vk-story-{uuid.uuid4().hex[:8]}",),
+            )
+            project_id = cur.lastrowid
+            for p in ("vk",):
+                db.execute(
+                    "INSERT INTO project_platforms (project_id, platform, enabled, mode) VALUES (?,?,?,?)",
+                    (project_id, p, 1, "auto"),
+                )
+            cur2 = db.execute(
+                "INSERT INTO content (project_id, type, title, texts, files, status) "
+                "VALUES (?,?,?,?,?,?)",
+                (project_id, "story", "VK Story", "{}", "{}", "approved"),
+            )
+            content_id = cur2.lastrowid
+            cur3 = db.execute(
+                """INSERT INTO plan_items
+                   (project_id, platform, content_type, date, time_slot, title, status, content_id)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (project_id, "vk", "story", "2026-06-15", "10:00", "VK Story", "generating", content_id),
+            )
+            item_id = cur3.lastrowid
+
+        with get_db() as db:
+            item = db.execute("SELECT * FROM plan_items WHERE id=?", (item_id,)).fetchone()
+
+        _create_schedule(item, content_id)
+
+        with get_db() as db:
+            sched = db.execute(
+                "SELECT * FROM schedule WHERE content_id=? AND platform='vk'", (content_id,)
+            ).fetchall()
+
+        assert len(sched) == 1, "Schedule должен быть создан"
+        assert sched[0]["status"] == "planned", (
+            f"VK-story schedule должен быть 'planned', но сейчас: {sched[0]['status']}"
+        )

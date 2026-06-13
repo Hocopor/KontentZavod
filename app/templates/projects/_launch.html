@@ -126,6 +126,15 @@
             </select>
         </div>
 
+        {# Громкость фоновой музыки #}
+        <div class="form-group">
+            <label for="music_volume_{{ project.slug }}">Громкость фоновой музыки</label>
+            <input type="range" id="music_volume_{{ project.slug }}" name="music_volume"
+                   min="0" max="0.5" step="0.02"
+                   value="{{ settings.music_volume | default(0.12) }}" style="width:100%;">
+            <small>Тихо по умолчанию — лёгкое фоновое звучание под голосом.</small>
+        </div>
+
         {# Настройки субтитров #}
         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:1rem; margin-bottom:1rem;">
             <div class="form-group" style="margin-bottom:0;">

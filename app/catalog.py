@@ -17,7 +17,7 @@ CONTENT_TYPES: dict[str, dict[str, dict]] = {
     "vk": {
         "post":  {"label": "Пост",            "kind": "text",  "publish": "auto",   "default_on": True},
         "video": {"label": "Видео (в стену)", "kind": "video", "publish": "auto",   "default_on": True},
-        "story": {"label": "История",         "kind": "story", "publish": "manual", "default_on": False},
+        "story": {"label": "История",         "kind": "story", "publish": "auto",   "default_on": False},
     },
     "instagram": {
         "post":  {"label": "Пост",            "kind": "text",  "publish": "manual", "default_on": True},

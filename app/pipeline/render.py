@@ -260,11 +260,13 @@ def _final_mux(
     subs_path: Path,
     total_duration: float,
     out_path: Path,
+    music_volume: float = _MUSIC_BASE_VOLUME,
 ) -> None:
     """
     Финальный проход: немое видео + голос (+ музыка с ducking) + вжигание ASS.
 
-    Музыка: зацикливается на всю длительность, базовая громкость 0.25,
+    Музыка: зацикливается на всю длительность, базовая громкость берётся из
+    параметра music_volume (по умолчанию _MUSIC_BASE_VOLUME=0.25),
     приседает под голосом через sidechaincompress (голос — sidechain-вход).
     """
     subs_arg = escape_subtitles_path(subs_path)
@@ -285,7 +287,7 @@ def _final_mux(
         # Музыка: громкость → ducking под голосом → обрезка по длительности.
         audio_chain = (
             f"[1:a]asplit=2[voice_mix][voice_sc];"
-            f"[2:a]volume={_MUSIC_BASE_VOLUME}[music_low];"
+            f"[2:a]volume={music_volume}[music_low];"
             f"[music_low][voice_sc]sidechaincompress="
             f"threshold=0.05:ratio=8:attack=20:release=300[music_ducked];"
             f"[voice_mix][music_ducked]amix=inputs=2:duration=first:"
@@ -341,6 +343,7 @@ def render_video(
     asset_paths: list[Path],
     subs_path: Path,
     music_path: Path | None,
+    music_volume: float | None = None,
 ) -> tuple[Path, Path]:
     """
     Срендерить вертикальный ролик 1080×1920 из сценных ассетов, озвучки и субтитров.
@@ -352,6 +355,7 @@ def render_video(
                       len == len(scene_audios).
         subs_path:    путь к .ass-субтитрам для вжигания.
         music_path:   путь к mp3 фоновой музыки или None.
+        music_volume: громкость фоновой музыки (0.0–0.5); None → _MUSIC_BASE_VOLUME.
 
     Returns:
         (video_path, preview_path):
@@ -377,6 +381,8 @@ def render_video(
     total_duration = sum(sa.duration for sa in scene_audios)
     if total_duration <= 0:
         raise RenderError(f"Суммарная длительность <= 0: {total_duration}")
+
+    mv = _MUSIC_BASE_VOLUME if music_volume is None else float(music_volume)
 
     # ── Директории ──
     videos_dir = settings.data_dir_absolute / "videos"
@@ -414,6 +420,7 @@ def render_video(
             subs_path,
             total_duration,
             video_path,
+            mv,
         )
 
         # ── Проход 5: превью ──
