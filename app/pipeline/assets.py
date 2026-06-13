@@ -84,50 +84,61 @@ def _get_pool_proxies() -> list[str]:
         return []
 
 
+def _proxy_first() -> bool:
+    """True, если медиа-запросы надо начинать с прокси (proxy_first и пул непуст)."""
+    if str(settings.MEDIA_EGRESS).strip().lower() != "proxy_first":
+        return False
+    return bool(_get_pool_proxies())
+
+
 def _http_get(url: str, headers: dict | None = None, params: dict | None = None) -> httpx.Response:
     """
     GET с таймаутом, 1 повтором при сетевой ошибке и прокси-фейловером.
 
-    Алгоритм:
-      1. Прямой запрос (с 1 ретраем при сетевых ошибках).
-      2. При сетевых ошибках (TransportError/TimeoutException) или HTTP 402/403/429
-         — перебор прокси пула (http и socks5), по одной попытке.
-         Ответ 402 через прокси = прокси сдох (исчерпан тариф) → следующий прокси.
-      3. Если всё провалилось — raise последней ошибки.
+    Алгоритм зависит от MEDIA_EGRESS:
+      proxy_first (дефолт) + непустой пул:
+        1. Перебор всех прокси — первый успешный возвращается.
+        2. Фоллбэк: прямой запрос (с 1 ретраем).
+      direct_first / пустой пул (старое поведение):
+        1. Прямой запрос (с 1 ретраем при сетевых ошибках).
+        2. Перебор прокси пула, по одной попытке каждый.
+      В обоих случаях 402 через прокси = прокси сдох (исчерпан тариф) → следующий.
+      Если всё провалилось — raise последней ошибки.
     """
+    from app.services.proxies import mask_proxy_url  # noqa: PLC0415
+
     _headers = headers or {}
     _params = params or {}
     last_exc: Exception | None = None
+    proxies = _get_pool_proxies()
 
-    # Попытка 1: напрямую (с 1 ретраем)
-    for attempt in range(_MAX_RETRIES + 1):
-        try:
-            resp = httpx.get(url, headers=_headers, params=_params, timeout=_TIMEOUT, follow_redirects=True)
-            if resp.status_code not in (402, 403, 429):
-                return resp
-            # HTTP-блокировка — считаем ошибкой для фейловера
-            last_exc = httpx.HTTPStatusError(
-                f"HTTP {resp.status_code}",
-                request=resp.request,
-                response=resp,
-            )
-            logger.warning("GET %s → HTTP %s, пробую прокси…", url, resp.status_code)
-            break  # ретраи не помогут при 402/403/429 — сразу к прокси
-        except (httpx.TransportError, httpx.TimeoutException) as exc:
-            last_exc = exc
-            if attempt >= _MAX_RETRIES:
-                logger.warning("GET %s провалился (%s), пробую прокси…", url, exc)
-                break
-            logger.warning("Повтор GET %s после ошибки: %s", url, exc)
+    def _attempt_direct() -> httpx.Response | None:
+        nonlocal last_exc
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                resp = httpx.get(url, headers=_headers, params=_params, timeout=_TIMEOUT, follow_redirects=True)
+                if resp.status_code not in (402, 403, 429):
+                    return resp
+                last_exc = httpx.HTTPStatusError(
+                    f"HTTP {resp.status_code}",
+                    request=resp.request,
+                    response=resp,
+                )
+                logger.warning("GET %s → HTTP %s, пробую прокси…", url, resp.status_code)
+                return None
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                last_exc = exc
+                if attempt >= _MAX_RETRIES:
+                    logger.warning("GET %s провалился (%s), пробую прокси…", url, exc)
+                    return None
+                logger.warning("Повтор GET %s после ошибки: %s", url, exc)
+        return None
 
-    # Попытки через прокси
-    from app.services.proxies import mask_proxy_url  # noqa: PLC0415
-
-    for proxy_url in _get_pool_proxies():
+    def _attempt_proxy(proxy_url: str) -> httpx.Response | None:
+        nonlocal last_exc
         try:
             with httpx.Client(proxy=proxy_url, timeout=_TIMEOUT) as client:
                 resp = client.get(url, headers=_headers, params=_params, follow_redirects=True)
-            # 402 через прокси — прокси сдох (исчерпан тариф провайдера)
             if resp.status_code == 402:
                 logger.warning(
                     "GET через прокси %s → 402 (тариф прокси исчерпан), следующий прокси",
@@ -138,17 +149,35 @@ def _http_get(url: str, headers: dict | None = None, params: dict | None = None)
                     request=resp.request,
                     response=resp,
                 )
-                continue
-            masked = mask_proxy_url(proxy_url)
-            logger.info("GET %s скачан через прокси %s", url, masked)
+                return None
+            logger.info("GET %s скачан через прокси %s", url, mask_proxy_url(proxy_url))
             return resp
         except Exception as exc:  # noqa: BLE001
             logger.warning("Прокси %s не помог для GET %s: %s", mask_proxy_url(proxy_url), url, exc)
             last_exc = exc
+            return None
+
+    if _proxy_first():
+        # proxy_first: сначала все прокси, затем direct как фоллбэк
+        for proxy_url in proxies:
+            result = _attempt_proxy(proxy_url)
+            if result is not None:
+                return result
+        result = _attempt_direct()
+        if result is not None:
+            return result
+    else:
+        # direct_first / пустой пул: сначала direct, затем прокси
+        result = _attempt_direct()
+        if result is not None:
+            return result
+        for proxy_url in proxies:
+            result = _attempt_proxy(proxy_url)
+            if result is not None:
+                return result
 
     if last_exc is not None:
         raise last_exc
-    # Сюда не должны попасть, но на всякий случай
     raise AssetsError(f"Не удалось выполнить GET {url}")
 
 
@@ -156,41 +185,46 @@ def _download_stream(url: str, dest: Path, headers: dict | None = None) -> None:
     """
     Потоковое скачивание файла по URL в dest с прокси-фейловером.
 
-    Алгоритм:
-      1. Прямая попытка (с 1 ретраем при сетевых ошибках / HTTPStatusError).
-      2. При сетевых ошибках или HTTPStatusError (вкл. 402/403/429)
-         — перебор прокси пула (http и socks5), по одной попытке каждый.
-         Ответ 402 через прокси = прокси сдох (исчерпан тариф) → следующий прокси.
-      3. Если всё провалилось — raise последней ошибки.
+    Алгоритм зависит от MEDIA_EGRESS:
+      proxy_first (дефолт) + непустой пул:
+        1. Перебор всех прокси — первый успешный сохраняет файл и возвращает.
+        2. Фоллбэк: прямое скачивание (с 1 ретраем).
+      direct_first / пустой пул (старое поведение):
+        1. Прямое скачивание (с 1 ретраем при ошибках).
+        2. Перебор прокси пула, по одной попытке каждый.
+      В обоих случаях 402 через прокси = прокси сдох → следующий.
+      Если всё провалилось — raise последней ошибки.
     """
-    _headers = headers or {}
-    last_exc: Exception | None = None
-
-    # Попытка 1: напрямую (с 1 ретраем)
-    for attempt in range(_MAX_RETRIES + 1):
-        try:
-            with httpx.stream("GET", url, headers=_headers, timeout=_TIMEOUT, follow_redirects=True) as resp:
-                resp.raise_for_status()
-                with dest.open("wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=65536):
-                        f.write(chunk)
-            return
-        except (httpx.TransportError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-            last_exc = exc
-            if attempt >= _MAX_RETRIES:
-                logger.warning("Скачивание %s провалилось (%s), пробую прокси…", url, exc)
-                break
-            logger.warning("Повтор скачивания %s после ошибки: %s", url, exc)
-
-    # Попытки через прокси
     from app.services.proxies import mask_proxy_url  # noqa: PLC0415
 
-    for proxy_url in _get_pool_proxies():
+    _headers = headers or {}
+    last_exc: Exception | None = None
+    proxies = _get_pool_proxies()
+
+    def _attempt_direct() -> bool:
+        nonlocal last_exc
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                with httpx.stream("GET", url, headers=_headers, timeout=_TIMEOUT, follow_redirects=True) as resp:
+                    resp.raise_for_status()
+                    with dest.open("wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=65536):
+                            f.write(chunk)
+                return True
+            except (httpx.TransportError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                last_exc = exc
+                if attempt >= _MAX_RETRIES:
+                    logger.warning("Скачивание %s провалилось (%s), пробую прокси…", url, exc)
+                    return False
+                logger.warning("Повтор скачивания %s после ошибки: %s", url, exc)
+        return False
+
+    def _attempt_proxy(proxy_url: str) -> bool:
+        nonlocal last_exc
         try:
             proxy_ok = False
             with httpx.Client(proxy=proxy_url, timeout=_TIMEOUT) as client:
                 with client.stream("GET", url, headers=_headers, follow_redirects=True) as resp:
-                    # 402 через прокси = прокси сдох (исчерпан тариф провайдера)
                     if resp.status_code == 402:
                         logger.warning(
                             "Скачивание через прокси %s → 402 (тариф исчерпан), следующий прокси",
@@ -208,15 +242,31 @@ def _download_stream(url: str, dest: Path, headers: dict | None = None) -> None:
                                 f.write(chunk)
                         proxy_ok = True
             if proxy_ok:
-                masked = mask_proxy_url(proxy_url)
-                logger.info("Скачивание %s выполнено через прокси %s", url, masked)
-                return
+                logger.info("Скачивание %s выполнено через прокси %s", url, mask_proxy_url(proxy_url))
+                return True
+            return False
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Прокси %s не помог для скачивания %s: %s",
                 mask_proxy_url(proxy_url), url, exc,
             )
             last_exc = exc
+            return False
+
+    if _proxy_first():
+        # proxy_first: сначала все прокси, затем direct как фоллбэк
+        for proxy_url in proxies:
+            if _attempt_proxy(proxy_url):
+                return
+        if _attempt_direct():
+            return
+    else:
+        # direct_first / пустой пул: сначала direct, затем прокси
+        if _attempt_direct():
+            return
+        for proxy_url in proxies:
+            if _attempt_proxy(proxy_url):
+                return
 
     if last_exc is not None:
         raise last_exc

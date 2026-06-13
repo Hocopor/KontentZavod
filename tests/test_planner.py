@@ -703,3 +703,218 @@ def test_process_brain_rejected_items_not_counted_as_coverage(patch_env, monkeyp
 
     # rejected не считается покрытием → generate_plan должен вызваться
     assert plan_called["n"] == 1
+
+
+# ─── 9.7 C1 — Параллельность недельных LLM-вызовов ──────────────────────────
+
+
+class TestPlanConcurrency:
+    """
+    Тесты C1: параллельное наполнение недель плана.
+    """
+
+    def _fake_chat_by_slot(self, messages, purpose=None, json_mode=False, **kw):
+        """
+        Детерминированный фейк: возвращает слоты с заголовками по slot_id.
+        Работает корректно для любого числа слотов — парсит SLOTS из промпта.
+        """
+        # Найдём slot_id из переданных сообщений (JSON в user-промпте)
+        content = messages[-1]["content"] if messages else ""
+        # Пытаемся найти числа после "slot_id"
+        import re as _re
+        slot_ids = [int(m) for m in _re.findall(r'"slot_id":\s*(\d+)', content)]
+        if not slot_ids:
+            slot_ids = list(range(1, 7))
+        items = [
+            {
+                "slot_id": sid,
+                "title": f"Тема-детерм-{sid}",
+                "brief": {"hook": "h", "outline": "o", "cta": "", "keywords": ["k"], "rubric": "Рубрика 1"},
+            }
+            for sid in slot_ids
+        ]
+        return json.dumps({"items": items}, ensure_ascii=False)
+
+    def test_parallel_same_result_as_sequential(self, patch_env, monkeypatch):
+        """
+        При PLAN_LLM_CONCURRENCY=4 и нескольких неделях результат вставки
+        идентичен PLAN_LLM_CONCURRENCY=1 (число пунктов и набор title).
+        """
+        _setup_db()
+        with get_db() as db:
+            project_id_seq, _ = _create_project(db, platforms=("telegram",), slug=_slug())
+            _create_active_strategy(db, project_id_seq)
+            project_id_par, _ = _create_project(db, platforms=("telegram",), slug=_slug())
+            _create_active_strategy(db, project_id_par)
+
+        import app.pipeline.planner as planner_mod
+        import app.config as cfg_mod
+
+        monkeypatch.setattr(planner_mod, "chat", self._fake_chat_by_slot)
+
+        # Последовательно (concurrency=1)
+        monkeypatch.setattr(cfg_mod.settings, "PLAN_LLM_CONCURRENCY", 1)
+        from app.pipeline.planner import generate_plan
+        count_seq = generate_plan(project_id_seq, "telegram", ANCHOR, "2026-06-28")
+
+        # Параллельно (concurrency=4)
+        monkeypatch.setattr(cfg_mod.settings, "PLAN_LLM_CONCURRENCY", 4)
+        count_par = generate_plan(project_id_par, "telegram", ANCHOR, "2026-06-28")
+
+        assert count_seq > 0, "sequential должен вставить хотя бы 1 пункт"
+        assert count_seq == count_par, (
+            f"parallel ({count_par}) != sequential ({count_seq}): число пунктов должно совпадать"
+        )
+
+        with get_db() as db:
+            titles_seq = {
+                r["title"] for r in db.execute(
+                    "SELECT title FROM plan_items WHERE project_id=?", (project_id_seq,)
+                ).fetchall()
+            }
+            titles_par = {
+                r["title"] for r in db.execute(
+                    "SELECT title FROM plan_items WHERE project_id=?", (project_id_par,)
+                ).fetchall()
+            }
+
+        assert titles_seq == titles_par, "Наборы заголовков sequential и parallel должны совпадать"
+
+    def test_parallel_chat_called_once_per_week(self, patch_env, monkeypatch):
+        """
+        При PLAN_LLM_CONCURRENCY=4 и двух неделях chat вызывается ровно 2 раза
+        (по одному на неделю), без лишних вызовов.
+        Период 2026-06-15 – 2026-06-28 → 2 недели по 6 слотов.
+        """
+        _setup_db()
+        with get_db() as db:
+            project_id, _ = _create_project(db, platforms=("telegram",), slug=_slug())
+            _create_active_strategy(db, project_id)
+
+        import app.pipeline.planner as planner_mod
+        import app.config as cfg_mod
+
+        call_count = {"n": 0}
+
+        def counting_chat(messages, purpose=None, json_mode=False, **kw):
+            call_count["n"] += 1
+            return self._fake_chat_by_slot(messages, purpose=purpose, json_mode=json_mode)
+
+        monkeypatch.setattr(planner_mod, "chat", counting_chat)
+        monkeypatch.setattr(cfg_mod.settings, "PLAN_LLM_CONCURRENCY", 4)
+
+        from app.pipeline.planner import generate_plan
+        count = generate_plan(project_id, "telegram", ANCHOR, "2026-06-28")
+
+        # 2 недели → 2 первичных chat-вызова (без retry, т.к. все slot_id приходят)
+        assert count == 12, f"Ожидалось 12 пунктов (6×2 недели), получено {count}"
+        assert call_count["n"] == 2, (
+            f"Ожидалось 2 chat-вызова (по 1 на неделю), получено {call_count['n']}"
+        )
+
+    def test_sequential_concurrency_1(self, patch_env, monkeypatch):
+        """
+        При PLAN_LLM_CONCURRENCY=1 план генерируется последовательно — результат корректный.
+        """
+        _setup_db()
+        with get_db() as db:
+            project_id, _ = _create_project(db, platforms=("telegram",), slug=_slug())
+            _create_active_strategy(db, project_id)
+
+        import app.pipeline.planner as planner_mod
+        import app.config as cfg_mod
+
+        monkeypatch.setattr(planner_mod, "chat", self._fake_chat_by_slot)
+        monkeypatch.setattr(cfg_mod.settings, "PLAN_LLM_CONCURRENCY", 1)
+
+        from app.pipeline.planner import generate_plan
+        count = generate_plan(project_id, "telegram", ANCHOR, "2026-06-21")
+        assert count == 6, f"Ожидалось 6 пунктов, получено {count}"
+
+
+# ─── 9.7 C2 — Лимит дней за тик brain._fill_plan ────────────────────────────
+
+
+class TestBrainTickMaxDays:
+    """
+    Тесты C2: _fill_plan ограничивает date_to через PLAN_TICK_MAX_DAYS.
+    """
+
+    def test_fill_plan_date_to_capped_by_tick_max(self, patch_env, monkeypatch):
+        """
+        _fill_plan с PLAN_TICK_MAX_DAYS=7 вызывает generate_plan с
+        date_to = date_from + 7, а не полным горизонтом 30 дней.
+        """
+        _setup_db()
+        settings_json = json.dumps({"plan_horizon_days": 30})
+        with get_db() as db:
+            project_id, _ = _create_project(
+                db, platforms=("telegram",), stage="running",
+                settings_json=settings_json, slug=_slug(),
+            )
+            _create_active_strategy(db, project_id)
+
+        import app.services.brain as brain_mod
+        import app.pipeline.planner as planner_mod
+        import app.config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod.settings, "PLAN_TICK_MAX_DAYS", 7)
+
+        plan_calls = []
+
+        def fake_generate_plan(pid, platform, date_from, date_to):
+            plan_calls.append({"date_from": date_from, "date_to": date_to})
+            return 3
+
+        monkeypatch.setattr(planner_mod, "generate_plan", fake_generate_plan)
+
+        brain_mod.process_brain()
+
+        assert len(plan_calls) == 1, "generate_plan должен быть вызван ровно 1 раз"
+        call = plan_calls[0]
+        from datetime import date as _d, timedelta
+        expected_date_from = _d.today()
+        expected_date_to = expected_date_from + timedelta(days=7)
+        assert call["date_from"] == expected_date_from.isoformat()
+        assert call["date_to"] == expected_date_to.isoformat(), (
+            f"date_to должен быть ограничен тиком до {expected_date_to.isoformat()}, "
+            f"получено {call['date_to']}"
+        )
+
+    def test_fill_plan_date_to_not_exceeds_horizon(self, patch_env, monkeypatch):
+        """
+        Если tick_max > horizon, date_to = target_date (не выходит за горизонт).
+        """
+        _setup_db()
+        settings_json = json.dumps({"plan_horizon_days": 5})
+        with get_db() as db:
+            project_id, _ = _create_project(
+                db, platforms=("telegram",), stage="running",
+                settings_json=settings_json, slug=_slug(),
+            )
+            _create_active_strategy(db, project_id)
+
+        import app.services.brain as brain_mod
+        import app.pipeline.planner as planner_mod
+        import app.config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod.settings, "PLAN_TICK_MAX_DAYS", 14)
+
+        plan_calls = []
+
+        def fake_generate_plan(pid, platform, date_from, date_to):
+            plan_calls.append({"date_from": date_from, "date_to": date_to})
+            return 3
+
+        monkeypatch.setattr(planner_mod, "generate_plan", fake_generate_plan)
+
+        brain_mod.process_brain()
+
+        assert len(plan_calls) == 1
+        call = plan_calls[0]
+        from datetime import date as _d, timedelta
+        expected_date_to = _d.today() + timedelta(days=5)
+        assert call["date_to"] == expected_date_to.isoformat(), (
+            f"date_to не должен превышать горизонт {expected_date_to.isoformat()}, "
+            f"получено {call['date_to']}"
+        )

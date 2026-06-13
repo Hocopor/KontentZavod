@@ -19,6 +19,7 @@ import json
 import logging
 from datetime import date, timedelta
 
+from app.config import settings
 from app.db import get_db, get_project_settings
 from app.llm import LLMError
 
@@ -155,7 +156,9 @@ def _fill_plan() -> None:
                     continue
 
                 date_from_str = date_from.isoformat()
-                date_to_str = target_date.isoformat()
+                tick_max = max(1, int(settings.PLAN_TICK_MAX_DAYS))
+                date_to = min(target_date, date_from + timedelta(days=tick_max))
+                date_to_str = date_to.isoformat()
 
                 logger.info(
                     "process_brain: generate_plan project_id=%d platform=%s %s–%s",

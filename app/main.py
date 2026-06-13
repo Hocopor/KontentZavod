@@ -3,6 +3,7 @@
 
 Запуск: uvicorn app.main:app --reload
 """
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,6 +11,19 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
+
+
+def _configure_logging() -> None:
+    """Включает логи нашего кода (логгер 'app' и его дети) на уровне settings.LOG_LEVEL.
+    uvicorn-логгеры не трогаем."""
+    level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+    app_logger = logging.getLogger("app")
+    app_logger.setLevel(level)
+    if not app_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
+        app_logger.addHandler(handler)
+    app_logger.propagate = False
 from app.db import init_db
 from app.scheduler import start_scheduler, stop_scheduler
 from app.web.dashboard import router as dashboard_router
@@ -39,6 +53,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    _configure_logging()
     app = FastAPI(
         title="КонтентЗавод",
         description="Генерация и публикация контента для нескольких проектов",

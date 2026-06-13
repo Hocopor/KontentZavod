@@ -60,6 +60,17 @@ _FIELDS: dict[str, tuple[str, str, str]] = {
     # Джоб collect_metrics запускается раз в N часов с джиттером (антиблок),
     # а не daily cron. Тип int.
     "METRICS_INTERVAL_HOURS": ("METRICS_INTERVAL_HOURS", "6",                   "int"),
+    # Уровень логирования для логгера "app" (DEBUG/INFO/WARNING).
+    # INFO — видны успехи скачиваний, пропущенные джобы и т.д.
+    "LOG_LEVEL":              ("LOG_LEVEL",              "INFO",                 "str"),
+    # Политика egress для медиа-запросов (Pexels/Pixabay/Openverse/Wikimedia).
+    # proxy_first — с РФ-IP прямой запрос всегда блокируется, начинаем с прокси.
+    # direct_first — сначала прямой запрос, затем прокси (старое поведение).
+    "MEDIA_EGRESS":           ("MEDIA_EGRESS",           "proxy_first",          "str"),
+    # Перф контент-плана: сколько недельных LLM-вызовов плана делать параллельно (1 = последовательно).
+    "PLAN_LLM_CONCURRENCY":   ("PLAN_LLM_CONCURRENCY",   "4",                    "int"),
+    # Макс. дней плана, генерируемых за один тик мозга (план наполняется частями, тик короткий).
+    "PLAN_TICK_MAX_DAYS":     ("PLAN_TICK_MAX_DAYS",     "14",                   "int"),
 }
 
 # Строковые поля, значения которых по своей природе не содержат пробелов
@@ -75,6 +86,8 @@ _SINGLE_TOKEN_FIELDS = {
     "FERNET_KEY",
     "PEXELS_API_KEY",
     "PIXABAY_API_KEY",
+    "LOG_LEVEL",
+    "MEDIA_EGRESS",
 }
 
 

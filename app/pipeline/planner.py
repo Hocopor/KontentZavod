@@ -17,9 +17,11 @@ generate_plan(project_id, platform, date_from, date_to) -> int:
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date as _date
 
 from app import catalog
+from app.config import settings
 from app.db import get_db, get_project_settings
 from app.llm import chat, LLMError
 from app.pipeline.prompts import load_prompt, load_rules
@@ -427,6 +429,64 @@ def _slot_for_prompt(slot_id: int, slot: dict, anchor: _date) -> dict:
 # ─── Основная функция ─────────────────────────────────────────────────────────
 
 
+def _fill_week_group(
+    project_id: int,
+    platform: str,
+    platform_strategy: dict | None,
+    project: dict,
+    id_to_slot: dict,
+    anchor: _date,
+) -> dict:
+    """
+    Полный цикл одной недели: prompt → chat(+retry) → retry недостающих слотов.
+    Своё db-соединение на каждый шаг (поток-безопасно).
+    Возвращает {slot_id: item|None}.
+    """
+    # 1) первичный промпт + chat
+    with get_db() as db:
+        prompt_slots = [_slot_for_prompt(sid, id_to_slot[sid], anchor) for sid in sorted(id_to_slot)]
+        messages = _build_prompt_for_group(db, project_id, platform, platform_strategy, project, prompt_slots)
+    try:
+        by_id = _chat_plan_with_retry(messages)
+    except LLMError as exc:
+        logger.warning(
+            "generate_plan: LLMError в группе недели (project=%d platform=%s): %s — пропуск",
+            project_id, platform, exc,
+        )
+        return {sid: None for sid in id_to_slot}
+
+    # 2) джойн + сбор недостающих
+    results: dict = {}
+    missing_ids: list = []
+    for sid in sorted(id_to_slot):
+        item = by_id.get(sid)
+        title = (item.get("title") or "").strip() if isinstance(item, dict) else ""
+        if isinstance(item, dict) and title:
+            results[sid] = item
+        else:
+            missing_ids.append(sid)
+
+    # 3) один retry по недостающим
+    if missing_ids:
+        with get_db() as db:
+            retry_prompt_slots = [_slot_for_prompt(sid, id_to_slot[sid], anchor) for sid in missing_ids]
+            retry_messages = _build_prompt_for_group(
+                db, project_id, platform, platform_strategy, project, retry_prompt_slots,
+                prefix="Это повторный запрос — предыдущий ответ пропустил эти слоты.",
+            )
+        try:
+            retry_by_id = _chat_plan_with_retry(retry_messages)
+        except LLMError as exc:
+            logger.warning("generate_plan: LLMError в retry недели: %s", exc)
+            retry_by_id = {}
+        for sid in missing_ids:
+            item = retry_by_id.get(sid)
+            title = (item.get("title") or "").strip() if isinstance(item, dict) else ""
+            results[sid] = item if (isinstance(item, dict) and title) else None
+
+    return results
+
+
 def _build_prompt_for_group(
     db,
     project_id: int,
@@ -525,12 +585,14 @@ def _generate_plan_impl(
                   остальные группы (вставленное не откатывается).
     """
     with get_db() as db:
-        project = db.execute(
+        project_row = db.execute(
             "SELECT * FROM projects WHERE id=?", (project_id,)
         ).fetchone()
-        if project is None:
+        if project_row is None:
             logger.warning("generate_plan: project_id=%d не найден", project_id)
             return 0
+        # Отвязываем project от соединения — читаем как dict для потоко-безопасного доступа в потоках
+        project = dict(project_row)
 
         strategy_row = _get_active_strategy(db, project_id)
         if strategy_row is None:
@@ -576,69 +638,44 @@ def _generate_plan_impl(
         k = week_index(anchor, d)
         groups.setdefault(k, []).append(slot)
 
-    # Для каждой группы: один LLM-вызов; результат — заполненные слоты
-    filled: list[tuple[dict, dict | None]] = []
-
+    # Подготовка карт слотов по неделям (slot_id с 1 ВНУТРИ недели), детерминированно
+    week_maps: dict[int, dict] = {}
     for k in sorted(groups.keys()):
         group = groups[k]
         group.sort(key=lambda s: (s["date"], s["time_slot"]))
-        id_to_slot = {i + 1: group[i] for i in range(len(group))}
+        week_maps[k] = {i + 1: group[i] for i in range(len(group))}
 
-        with get_db() as db:
-            prompt_slots = [
-                _slot_for_prompt(sid, id_to_slot[sid], anchor)
-                for sid in sorted(id_to_slot)
-            ]
-            messages = _build_prompt_for_group(
-                db, project_id, platform, platform_strategy, project, prompt_slots
+    # Наполнение недель: параллельно (если concurrency>1 и недель >1), иначе последовательно
+    concurrency = max(1, int(settings.PLAN_LLM_CONCURRENCY))
+    results_by_k: dict[int, dict] = {}
+    if concurrency == 1 or len(week_maps) <= 1:
+        for k in sorted(week_maps):
+            results_by_k[k] = _fill_week_group(
+                project_id, platform, platform_strategy, project, week_maps[k], anchor
             )
-
-        try:
-            by_id = _chat_plan_with_retry(messages)
-        except LLMError as exc:
-            logger.warning(
-                "generate_plan: LLMError в группе недели %d (project=%d platform=%s): %s "
-                "— пропуск группы",
-                k, project_id, platform, exc,
-            )
-            continue
-
-        # Джойн по slot_id; недостающие/пустые — собрать для повторного запроса
-        results: dict[int, dict | None] = {}
-        missing_ids: list[int] = []
-        for sid in sorted(id_to_slot):
-            item = by_id.get(sid)
-            title = (item.get("title") or "").strip() if isinstance(item, dict) else ""
-            if isinstance(item, dict) and title:
-                results[sid] = item
-            else:
-                missing_ids.append(sid)
-
-        # Один повторный chat только по недостающим слотам
-        if missing_ids:
-            with get_db() as db:
-                retry_prompt_slots = [
-                    _slot_for_prompt(sid, id_to_slot[sid], anchor) for sid in missing_ids
-                ]
-                retry_messages = _build_prompt_for_group(
-                    db, project_id, platform, platform_strategy, project,
-                    retry_prompt_slots,
-                    prefix="Это повторный запрос — предыдущий ответ пропустил эти слоты.",
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as ex:
+            futs = {
+                k: ex.submit(
+                    _fill_week_group,
+                    project_id, platform, platform_strategy, project, week_maps[k], anchor,
                 )
-            try:
-                retry_by_id = _chat_plan_with_retry(retry_messages)
-            except LLMError as exc:
-                logger.warning(
-                    "generate_plan: LLMError в retry группы недели %d: %s", k, exc
-                )
-                retry_by_id = {}
-            for sid in missing_ids:
-                item = retry_by_id.get(sid)
-                title = (item.get("title") or "").strip() if isinstance(item, dict) else ""
-                results[sid] = item if (isinstance(item, dict) and title) else None
+                for k in week_maps
+            }
+            for k, fut in futs.items():
+                try:
+                    results_by_k[k] = fut.result()
+                except Exception:
+                    logger.exception("generate_plan: ошибка недели k=%s", k)
+                    results_by_k[k] = {sid: None for sid in week_maps[k]}
 
+    # Сборка filled В ТОМ ЖЕ ПОРЯДКЕ, что и раньше (по неделям, внутри — по slot_id)
+    filled: list[tuple[dict, dict | None]] = []
+    for k in sorted(week_maps):
+        id_to_slot = week_maps[k]
+        res = results_by_k.get(k, {})
         for sid in sorted(id_to_slot):
-            filled.append((id_to_slot[sid], results.get(sid)))
+            filled.append((id_to_slot[sid], res.get(sid)))
 
     if not filled:
         return 0

@@ -1202,3 +1202,213 @@ class TestWikimediaPhoto:
         assert "KontentZavod" in ua, (
             f"User-Agent должен содержать 'KontentZavod', получили: {ua!r}"
         )
+
+
+# ─── Политика MEDIA_EGRESS (proxy_first / direct_first) ──────────────────────
+
+
+class TestMediaEgress:
+    """
+    Тесты политики proxy_first / direct_first в _http_get и _download_stream.
+
+    Мокаем:
+      - app.pipeline.assets._get_pool_proxies  — пул прокси
+      - app.pipeline.assets.httpx.get / httpx.stream — прямые запросы
+      - app.pipeline.assets.httpx.Client — прокси-клиент
+      - app.config.settings.MEDIA_EGRESS — политика
+    """
+
+    def _make_good_stream_ctx(self) -> MagicMock:
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=ctx)
+        ctx.__exit__ = MagicMock(return_value=False)
+        ctx.raise_for_status = MagicMock()
+        ctx.iter_bytes = MagicMock(return_value=[b"\xff\xd8\xff" + b"\x00" * 10])
+        return ctx
+
+    def test_proxy_first_with_nonempty_pool_proxy_called_before_direct(
+        self, tmp_path, monkeypatch
+    ):
+        """
+        proxy_first + непустой пул → прокси вызывается первым, direct НЕ вызывается
+        (проверяем _download_stream: прокси успешен, httpx.stream не трогается).
+        """
+        import app.pipeline.assets as assets_mod
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "MEDIA_EGRESS", "proxy_first")
+
+        proxy_calls: list[str] = []
+        direct_stream_called = []
+
+        # Прокси-клиент: успешно скачивает
+        proxy_stream_ctx = self._make_good_stream_ctx()
+        proxy_client = MagicMock()
+        proxy_client.__enter__ = MagicMock(return_value=proxy_client)
+        proxy_client.__exit__ = MagicMock(return_value=False)
+        proxy_client.stream = MagicMock(return_value=proxy_stream_ctx)
+
+        class FakeClient:
+            def __init__(self, proxy=None, timeout=None, **kw):
+                proxy_calls.append(proxy)
+
+            def __enter__(self):
+                return proxy_client
+
+            def __exit__(self, *args):
+                pass
+
+        monkeypatch.setattr(assets_mod.httpx, "Client", FakeClient)
+        monkeypatch.setattr(
+            assets_mod.httpx, "stream",
+            lambda *a, **kw: direct_stream_called.append(1) or self._make_good_stream_ctx(),
+        )
+        monkeypatch.setattr(
+            "app.pipeline.assets._get_pool_proxies",
+            lambda: ["socks5://proxy.example.com:1080/"],
+        )
+
+        dest = tmp_path / "egress_proxy_first.jpg"
+        assets_mod._download_stream("https://pexels.com/image.jpg", dest)
+
+        assert dest.exists(), "Файл должен быть скачан"
+        assert len(proxy_calls) >= 1, "Прокси-клиент должен быть вызван"
+        assert len(direct_stream_called) == 0, "Прямой stream НЕ должен вызываться при proxy_first"
+
+    def test_proxy_first_all_proxies_fail_fallback_to_direct(
+        self, tmp_path, monkeypatch
+    ):
+        """
+        proxy_first + непустой пул, все прокси падают → фоллбэк на direct.
+        """
+        import app.pipeline.assets as assets_mod
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "MEDIA_EGRESS", "proxy_first")
+
+        direct_stream_called = []
+
+        # Прокси-клиент всегда бросает исключение
+        import httpx as httpx_module
+
+        class FakeFailClient:
+            def __init__(self, proxy=None, timeout=None, **kw):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def stream(self, method, url, **kw):
+                raise httpx_module.TransportError("proxy down")
+
+        # Прямой stream: успешен
+        good_direct_ctx = self._make_good_stream_ctx()
+
+        def fake_direct_stream(method, url, **kw):
+            direct_stream_called.append(url)
+            return good_direct_ctx
+
+        monkeypatch.setattr(assets_mod.httpx, "Client", FakeFailClient)
+        monkeypatch.setattr(assets_mod.httpx, "stream", fake_direct_stream)
+        monkeypatch.setattr(
+            "app.pipeline.assets._get_pool_proxies",
+            lambda: ["socks5://dead-proxy:1080/"],
+        )
+
+        dest = tmp_path / "egress_fallback_direct.jpg"
+        assets_mod._download_stream("https://pexels.com/image.jpg", dest)
+
+        assert dest.exists(), "Файл должен быть скачан через direct-фоллбэк"
+        assert len(direct_stream_called) >= 1, "Direct stream должен вызываться как фоллбэк"
+
+    def test_proxy_first_empty_pool_behaves_as_direct(
+        self, tmp_path, monkeypatch
+    ):
+        """
+        proxy_first + ПУСТОЙ пул → поведение как direct_first (прямой запрос первым).
+        """
+        import app.pipeline.assets as assets_mod
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "MEDIA_EGRESS", "proxy_first")
+
+        direct_stream_called = []
+        proxy_calls = []
+
+        class FakeClient:
+            def __init__(self, proxy=None, timeout=None, **kw):
+                proxy_calls.append(proxy)
+
+            def __enter__(self):
+                return MagicMock()
+
+            def __exit__(self, *args):
+                pass
+
+        good_ctx = self._make_good_stream_ctx()
+
+        def fake_direct_stream(method, url, **kw):
+            direct_stream_called.append(url)
+            return good_ctx
+
+        monkeypatch.setattr(assets_mod.httpx, "Client", FakeClient)
+        monkeypatch.setattr(assets_mod.httpx, "stream", fake_direct_stream)
+        # Пустой пул
+        monkeypatch.setattr(
+            "app.pipeline.assets._get_pool_proxies",
+            lambda: [],
+        )
+
+        dest = tmp_path / "egress_empty_pool.jpg"
+        assets_mod._download_stream("https://pexels.com/image.jpg", dest)
+
+        assert dest.exists(), "Файл должен быть скачан напрямую"
+        assert len(direct_stream_called) >= 1, "Прямой stream должен использоваться при пустом пуле"
+        assert len(proxy_calls) == 0, "Прокси-клиент НЕ должен создаваться при пустом пуле"
+
+    def test_direct_first_uses_direct_before_proxy(
+        self, tmp_path, monkeypatch
+    ):
+        """
+        direct_first → прямой запрос первым; при успехе прокси не вызывается.
+        """
+        import app.pipeline.assets as assets_mod
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "MEDIA_EGRESS", "direct_first")
+
+        direct_stream_called = []
+        proxy_calls = []
+
+        good_ctx = self._make_good_stream_ctx()
+
+        def fake_direct_stream(method, url, **kw):
+            direct_stream_called.append(url)
+            return good_ctx
+
+        class FakeClient:
+            def __init__(self, proxy=None, timeout=None, **kw):
+                proxy_calls.append(proxy)
+
+            def __enter__(self):
+                return MagicMock()
+
+            def __exit__(self, *args):
+                pass
+
+        monkeypatch.setattr(assets_mod.httpx, "stream", fake_direct_stream)
+        monkeypatch.setattr(assets_mod.httpx, "Client", FakeClient)
+        monkeypatch.setattr(
+            "app.pipeline.assets._get_pool_proxies",
+            lambda: ["socks5://proxy.example.com:1080/"],
+        )
+
+        dest = tmp_path / "egress_direct_first.jpg"
+        assets_mod._download_stream("https://pexels.com/image.jpg", dest)
+
+        assert dest.exists(), "Файл должен быть скачан"
+        assert len(direct_stream_called) >= 1, "Прямой stream должен вызываться при direct_first"
+        assert len(proxy_calls) == 0, "Прокси НЕ должен вызываться если direct успешен"
