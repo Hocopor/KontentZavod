@@ -8,6 +8,7 @@
 """
 import asyncio
 import logging
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -24,6 +25,25 @@ _VOICE_MAP: dict[str, str] = {
     "dmitry":   "ru-RU-DmitryNeural",
     "svetlana": "ru-RU-SvetlanaNeural",
 }
+
+# Дефолтные параметры темпа и тона edge-tts
+_DEFAULT_RATE  = "+0%"
+_DEFAULT_PITCH = "+0Hz"
+
+# Регулярные выражения для валидации rate/pitch
+_RATE_RE  = re.compile(r"^[+-]\d{1,3}%$")
+_PITCH_RE = re.compile(r"^[+-]\d{1,3}Hz$")
+
+
+def _valid_rate(rate: str) -> str:
+    """Валидировать строку темпа. Невалидное значение → _DEFAULT_RATE."""
+    return rate if isinstance(rate, str) and _RATE_RE.match(rate) else _DEFAULT_RATE
+
+
+def _valid_pitch(pitch: str) -> str:
+    """Валидировать строку тона. Невалидное значение → _DEFAULT_PITCH."""
+    return pitch if isinstance(pitch, str) and _PITCH_RE.match(pitch) else _DEFAULT_PITCH
+
 
 # edge-tts отдаёт тайминги в 100-наносекундных единицах
 _TICKS_PER_SEC: float = 1e7
@@ -121,6 +141,8 @@ async def _synthesize_one(
     voice_id: str,
     out_path: Path,
     proxy: Optional[str] = None,
+    rate: str = _DEFAULT_RATE,
+    pitch: str = _DEFAULT_PITCH,
 ) -> list[tuple[str, float, float]]:
     """
     Синтезировать одну сцену через edge-tts.
@@ -128,6 +150,8 @@ async def _synthesize_one(
     Args:
         proxy: опциональный HTTP-прокси (http://user:pass@host:port).
                В edge-tts >= 7.2 передаётся напрямую в Communicate(proxy=...).
+        rate:  темп речи в формате "+N%" или "-N%" (например, "+10%", "-10%").
+        pitch: тон голоса в формате "+NHz" или "-NHz" (например, "+8Hz", "-8Hz").
 
     Returns:
         Список (слово, start_сек, end_сек) — тайминги относительно начала сцены.
@@ -144,6 +168,8 @@ async def _synthesize_one(
         voice_id,
         boundary="WordBoundary",
         proxy=proxy,
+        rate=rate,
+        pitch=pitch,
     )
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
@@ -184,6 +210,8 @@ def _synthesize_one_with_retry(
     text: str,
     voice_id: str,
     out_path: Path,
+    rate: str = _DEFAULT_RATE,
+    pitch: str = _DEFAULT_PITCH,
 ) -> list[tuple[str, float, float]]:
     """
     Синтез с фейловером через прокси при 403.
@@ -195,7 +223,7 @@ def _synthesize_one_with_retry(
     """
     # Попытка 1: напрямую
     try:
-        return asyncio.run(_synthesize_one(text, voice_id, out_path, proxy=None))
+        return asyncio.run(_synthesize_one(text, voice_id, out_path, proxy=None, rate=rate, pitch=pitch))
     except Exception as exc:  # noqa: BLE001
         logger.warning("edge-tts: прямая попытка провалилась (%s), пробую прокси…", exc)
         last_exc: Exception = exc
@@ -204,7 +232,7 @@ def _synthesize_one_with_retry(
     for proxy in _get_http_proxies():
         proxy_url = proxy["url"]
         try:
-            result = asyncio.run(_synthesize_one(text, voice_id, out_path, proxy=proxy_url))
+            result = asyncio.run(_synthesize_one(text, voice_id, out_path, proxy=proxy_url, rate=rate, pitch=pitch))
             logger.info("edge-tts: синтез успешен через прокси %s", proxy_url)
             return result
         except Exception as exc2:  # noqa: BLE001
@@ -243,6 +271,27 @@ def _synthesize_fake(
     return timings
 
 
+# ─── Пунктуация субтитров ────────────────────────────────────────────────────
+
+
+def _reattach_punctuation(
+    text: str,
+    raw_timings: list[tuple[str, float, float]],
+) -> list[tuple[str, float, float]]:
+    """
+    Переналожить оригинальную пунктуацию на тайминги слов.
+
+    edge-tts отдаёт слова без знаков препинания. Если число whitespace-токенов
+    исходного текста совпадает с числом таймингов — заменяем слово каждого тайминга
+    на соответствующий оригинальный токен (с пунктуацией, кавычками, регистром).
+    При расхождении длин — возвращаем тайминги как есть (graceful).
+    """
+    tokens = text.split()
+    if len(tokens) == len(raw_timings):
+        return [(tokens[i], s, e) for i, (_w, s, e) in enumerate(raw_timings)]
+    return raw_timings
+
+
 # ─── Основная публичная функция ───────────────────────────────────────────────
 
 
@@ -250,6 +299,8 @@ def synthesize_scenes(
     scene_texts: list[str],
     out_dir: Path,
     voice: str = "dmitry",
+    rate: str = _DEFAULT_RATE,
+    pitch: str = _DEFAULT_PITCH,
 ) -> list[SceneAudio]:
     """
     Озвучить список сцен, вернуть SceneAudio с глобальными таймингами слов.
@@ -258,6 +309,12 @@ def synthesize_scenes(
         scene_texts: список текстов (по одному на сцену).
         out_dir:     директория для сохранения mp3-файлов (создаётся автоматически).
         voice:       "dmitry" (по умолчанию) | "svetlana".
+        rate:        темп речи в формате "+N%" или "-N%" (например, "+10%", "-10%").
+                     По умолчанию "+0%" (обычный темп). Невалидные значения
+                     заменяются дефолтом автоматически.
+        pitch:       тон голоса в формате "+NHz" или "-NHz" (например, "+8Hz", "-8Hz").
+                     По умолчанию "+0Hz" (обычный тон). Невалидные значения
+                     заменяются дефолтом автоматически.
 
     Returns:
         Список SceneAudio в том же порядке, что scene_texts.
@@ -266,6 +323,10 @@ def synthesize_scenes(
     Raises:
         TTSError: неизвестный голос, сетевая ошибка после ретрая, ошибка ffmpeg/ffprobe.
     """
+    # Нормализация: невалидные значения заменяются дефолтами
+    rate  = _valid_rate(rate)
+    pitch = _valid_pitch(pitch)
+
     if voice not in _VOICE_MAP:
         raise TTSError(
             f"Неизвестный голос: {voice!r}. Доступные: {list(_VOICE_MAP)}"
@@ -285,7 +346,10 @@ def synthesize_scenes(
         if settings.FAKE_TTS:
             raw_timings = _synthesize_fake(text, out_path)
         else:
-            raw_timings = _synthesize_one_with_retry(text, voice_id, out_path)
+            raw_timings = _synthesize_one_with_retry(text, voice_id, out_path, rate=rate, pitch=pitch)
+
+        # Переналожить оригинальную пунктуацию (edge-tts отдаёт слова без знаков)
+        raw_timings = _reattach_punctuation(text, raw_timings)
 
         # Длительность — из ffprobe (точнее, чем последний WordBoundary)
         duration = _ffprobe_duration(out_path)

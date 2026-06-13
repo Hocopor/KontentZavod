@@ -915,3 +915,53 @@ class TestVoiceAndSubtitlesSettings:
         assert "sub_outline_color" in resp.text
         assert "sub_highlight_color" in resp.text
         assert "sub_outline_width" in resp.text
+
+    def test_saves_tts_rate_and_pitch(self, client, patch_env):
+        """tts_rate=-10% и tts_pitch=+8Hz сохраняются в настройки проекта."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "tts_rate":  "-10%",
+                "tts_pitch": "+8Hz",
+            },
+        )
+        assert resp.status_code == 200
+        s = self._get_settings(slug)
+        assert s["tts_rate"]  == "-10%"
+        assert s["tts_pitch"] == "+8Hz"
+
+    def test_invalid_tts_rate_falls_back_to_default(self, client, patch_env):
+        """Мусорный tts_rate → дефолт '+0%'."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/launch-settings",
+            data={
+                "plan_horizon_days": "30",
+                "gen_lookahead_days": "3",
+                "retention_days": "14",
+                "tts_rate": "abc",
+            },
+        )
+        assert resp.status_code == 200
+        s = self._get_settings(slug)
+        assert s["tts_rate"] == "+0%"
+
+    def test_default_settings_have_tts_rate_pitch(self, client, patch_env):
+        """Новый проект получает дефолтные значения для tts_rate и tts_pitch."""
+        _setup_db()
+        with get_db() as db:
+            slug, _ = _create_project(db, platforms=("telegram",))
+
+        s = self._get_settings(slug)
+        assert s["tts_rate"]  == "+0%"
+        assert s["tts_pitch"] == "+0Hz"

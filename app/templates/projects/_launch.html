@@ -95,8 +95,10 @@
                             var sel = document.getElementById('tts_voice_{{ project.slug }}');
                             var v = sel.value;
                             if (v === 'auto') { v = 'svetlana'; }
+                            var rate  = document.getElementById('tts_rate_{{ project.slug }}').value;
+                            var pitch = document.getElementById('tts_pitch_{{ project.slug }}').value;
                             var aud = document.getElementById('voice-preview-{{ project.slug }}');
-                            aud.src = '/tts/preview/' + v + '?t=' + Date.now();
+                            aud.src = '/tts/preview/' + v + '?t=' + Date.now() + '&rate=' + encodeURIComponent(rate) + '&pitch=' + encodeURIComponent(pitch);
                             aud.style.display = 'inline-block';
                             aud.load(); aud.play();
                         })()">
@@ -104,6 +106,24 @@
                 </button>
                 <audio id="voice-preview-{{ project.slug }}" style="display:none; vertical-align:middle; height:32px;" controls></audio>
             </div>
+        </div>
+
+        {# Темп и тон озвучки #}
+        <div class="form-group">
+            <label for="tts_rate_{{ project.slug }}">Темп речи</label>
+            <select id="tts_rate_{{ project.slug }}" name="tts_rate" style="width:100%;">
+                <option value="-10%" {% if settings.tts_rate == '-10%' %}selected{% endif %}>Медленнее</option>
+                <option value="+0%"  {% if settings.tts_rate == '+0%'  %}selected{% endif %}>Обычный</option>
+                <option value="+10%" {% if settings.tts_rate == '+10%' %}selected{% endif %}>Быстрее</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="tts_pitch_{{ project.slug }}">Тон голоса</label>
+            <select id="tts_pitch_{{ project.slug }}" name="tts_pitch" style="width:100%;">
+                <option value="-8Hz" {% if settings.tts_pitch == '-8Hz' %}selected{% endif %}>Ниже</option>
+                <option value="+0Hz" {% if settings.tts_pitch == '+0Hz' %}selected{% endif %}>Обычный</option>
+                <option value="+8Hz" {% if settings.tts_pitch == '+8Hz' %}selected{% endif %}>Выше</option>
+            </select>
         </div>
 
         {# Настройки субтитров #}

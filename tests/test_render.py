@@ -128,7 +128,11 @@ def _assert_valid_video(video_path: Path, preview_path: Path, total_dur: float):
 
 
 def test_build_ass_default_colors(tmp_path):
-    """Дефолтные цвета: PrimaryColour=жёлтый (#ffe600), SecondaryColour=белый (#ffffff)."""
+    """
+    Дефолтные цвета: PrimaryColour=белый (#ffffff), SecondaryColour=белый.
+    Подсветка #ffe600 присутствует как inline-тег {\\1c&H00E6FF&} в Dialogue.
+    OutlineColour=чёрный (#000000 → &H00000000).
+    """
     from app.pipeline.tts import WordTiming
     from app.pipeline.subtitles import build_ass
 
@@ -139,12 +143,12 @@ def test_build_ass_default_colors(tmp_path):
     out = build_ass(words, tmp_path / "subs.ass")
     content = out.read_text(encoding="utf-8")
 
-    # PrimaryColour = highlight (жёлтый #ffe600 → AABBGGRR = &H0000E6FF)
-    assert "&H0000E6FF" in content, "PrimaryColour (подсветка) не совпадает"
-    # SecondaryColour = font_color (белый #ffffff → &H00FFFFFF)
-    assert "&H00FFFFFF" in content, "SecondaryColour (шрифт) не совпадает"
-    # OutlineColour = outline (чёрный #000000 → &H00000000)
+    # PrimaryColour = font_color (белый #ffffff → &H00FFFFFF) — в Style
+    assert "&H00FFFFFF" in content, "PrimaryColour/SecondaryColour (белый) не найден в Style"
+    # OutlineColour = outline (чёрный #000000 → &H00000000) — в Style
     assert "&H00000000" in content, "OutlineColour (обрамление) не совпадает"
+    # Подсветка #ffe600 inline в Dialogue: BGR = 00E6FF → &H00E6FF&
+    assert "{\\1c&H00E6FF&}" in content, "Inline-тег подсветки жёлтого цвета не найден"
 
 
 def test_build_ass_custom_colors(tmp_path):
@@ -156,19 +160,19 @@ def test_build_ass_custom_colors(tmp_path):
     out = build_ass(
         words,
         tmp_path / "custom.ass",
-        font_color="#ff0000",        # красный → SecondaryColour &H000000FF
-        outline_color="#00ff00",     # зелёный → OutlineColour   &H0000FF00
+        font_color="#ff0000",        # красный → Primary/Secondary &H000000FF
+        outline_color="#00ff00",     # зелёный → OutlineColour &H0000FF00
         outline_width=3,
-        highlight_color="#0000ff",   # синий   → PrimaryColour   &H00FF0000
+        highlight_color="#0000ff",   # синий inline → &HFF0000&
     )
     content = out.read_text(encoding="utf-8")
 
-    # PrimaryColour = highlight blue #0000ff → &H00FF0000
-    assert "&H00FF0000" in content, "PrimaryColour (синий) не найден"
-    # SecondaryColour = font_color red #ff0000 → &H000000FF
-    assert "&H000000FF" in content, "SecondaryColour (красный) не найден"
+    # PrimaryColour = font_color red #ff0000 → &H000000FF — в Style
+    assert "&H000000FF" in content, "PrimaryColour (красный) не найден в Style"
     # OutlineColour = outline green #00ff00 → &H0000FF00
     assert "&H0000FF00" in content, "OutlineColour (зелёный) не найден"
+    # Подсветка #0000ff inline: BGR = FF0000 → &HFF0000&
+    assert "{\\1c&HFF0000&}" in content, "Inline-тег подсветки синего цвета не найден"
     # Outline width
     assert ",3," in content, "Толщина обрамления 3 не найдена"
 

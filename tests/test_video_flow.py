@@ -266,7 +266,7 @@ class TestProduceVideo:
         # Патчим зависимости
         called_cleanup = []
 
-        def fake_synthesize(scene_texts, out_dir, voice="dmitry"):
+        def fake_synthesize(scene_texts, out_dir, voice="dmitry", **kwargs):
             from app.pipeline.tts import SceneAudio, WordTiming
             out_dir.mkdir(parents=True, exist_ok=True)
             audios = []
@@ -333,7 +333,7 @@ class TestProduceVideo:
                 db, project_id, status="production"
             )
 
-        def fake_synthesize(scene_texts, out_dir, voice="dmitry"):
+        def fake_synthesize(scene_texts, out_dir, voice="dmitry", **kwargs):
             from app.pipeline.tts import SceneAudio, WordTiming
             out_dir.mkdir(parents=True, exist_ok=True)
             audios = []

@@ -34,6 +34,8 @@ DEFAULT_PROJECT_SETTINGS: dict = {
     "autogen": 0,
     # Озвучка: tts_voice — "svetlana" | "dmitry" | "auto" (как решил LLM)
     "tts_voice": "svetlana",
+    "tts_rate": "+0%",     # темп озвучки edge-tts ("+0%" обычный, "-10%" медленнее, "+10%" быстрее)
+    "tts_pitch": "+0Hz",   # тон озвучки edge-tts ("+0Hz" обычный, "-8Hz" ниже, "+8Hz" выше)
     # Субтитры: цвета в HEX (#rrggbb) и толщина обрамления
     "sub_font_color": "#ffffff",
     "sub_outline_color": "#000000",

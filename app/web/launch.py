@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse
 
 from app import catalog
 from app.db import get_db, get_project_settings, DEFAULT_PROJECT_SETTINGS
+from app.pipeline.tts import _valid_rate, _valid_pitch
 from app.templates_env import templates
 
 # Допустимые голоса TTS
@@ -116,6 +117,10 @@ def _save_settings(db, project_id: int, form_data: dict) -> dict:
     if tts_voice not in _ALLOWED_TTS_VOICES:
         tts_voice = "svetlana"
 
+    # --- темп и тон TTS ---
+    tts_rate  = _valid_rate(str(form_data.get("tts_rate",  "+0%")).strip())
+    tts_pitch = _valid_pitch(str(form_data.get("tts_pitch", "+0Hz")).strip())
+
     # --- цвета субтитров ---
     def _color(key: str, default: str) -> str:
         val = str(form_data.get(key, default)).strip()
@@ -132,6 +137,8 @@ def _save_settings(db, project_id: int, form_data: dict) -> dict:
         "gen_lookahead_days": gen_lookahead_days,
         "retention_days": retention_days,
         "tts_voice": tts_voice,
+        "tts_rate": tts_rate,
+        "tts_pitch": tts_pitch,
         "sub_font_color": sub_font_color,
         "sub_outline_color": sub_outline_color,
         "sub_highlight_color": sub_highlight_color,

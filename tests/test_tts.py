@@ -269,24 +269,23 @@ def test_ass_play_res(tmp_path):
 
 
 def test_ass_dialogue_count_default(tmp_path):
-    """Число Dialogue-строк == ceil(слов / 3) при words_per_line=3."""
+    """Число Dialogue-строк == числу слов (по событию на слово), n=7 wpl=3 → 7."""
     from app.pipeline.subtitles import build_ass
 
-    n = 7  # 3 + 3 + 1 → 3 строки
+    n = 7
     words = _make_words(n)
     out = tmp_path / "subs.ass"
-    build_ass(words, out)
+    build_ass(words, out, words_per_line=3)
 
     content = out.read_text(encoding="utf-8")
     dialogues = [ln for ln in content.splitlines() if ln.startswith("Dialogue:")]
-    expected = math.ceil(n / 3)
-    assert len(dialogues) == expected, (
-        f"Ожидалось {expected} Dialogue, найдено {len(dialogues)}"
+    assert len(dialogues) == n, (
+        f"Ожидалось {n} Dialogue (по событию на слово), найдено {len(dialogues)}"
     )
 
 
 def test_ass_dialogue_count_custom_wpl(tmp_path):
-    """Число Dialogue-строк == ceil(слов / words_per_line) для произвольного WPL."""
+    """Число Dialogue-строк == числу слов (по событию на слово), n=10 wpl=2 → 10."""
     from app.pipeline.subtitles import build_ass
 
     n = 10
@@ -297,12 +296,13 @@ def test_ass_dialogue_count_custom_wpl(tmp_path):
 
     content = out.read_text(encoding="utf-8")
     dialogues = [ln for ln in content.splitlines() if ln.startswith("Dialogue:")]
-    expected = math.ceil(n / wpl)
-    assert len(dialogues) == expected
+    assert len(dialogues) == n, (
+        f"Ожидалось {n} Dialogue (по событию на слово), найдено {len(dialogues)}"
+    )
 
 
-def test_ass_karaoke_tags_present(tmp_path):
-    """В каждой Dialogue-строке должны быть karaoke-теги {\\kNN}."""
+def test_ass_highlight_tag_present(tmp_path):
+    """В каждой Dialogue-строке должен быть inline-тег подсветки {\\1c&H...&}."""
     from app.pipeline.subtitles import build_ass
 
     words = _make_words(6)
@@ -311,9 +311,9 @@ def test_ass_karaoke_tags_present(tmp_path):
 
     content = out.read_text(encoding="utf-8")
     dialogues = [ln for ln in content.splitlines() if ln.startswith("Dialogue:")]
-    pattern = re.compile(r"\{\\k\d+\}")
+    pattern = re.compile(r"\{\\1c&H[0-9A-Fa-f]{6}&\}")
     for d in dialogues:
-        assert pattern.search(d), f"Karaoke-тег не найден в строке: {d!r}"
+        assert pattern.search(d), f"Inline-тег подсветки не найден в строке: {d!r}"
 
 
 _TIME_RE = re.compile(r"^\d:\d{2}:\d{2}\.\d{2}$")
@@ -376,3 +376,158 @@ def test_ass_returns_path(tmp_path):
     out = tmp_path / "ret.ass"
     result = build_ass([], out)
     assert result == out
+
+
+def test_ass_cumulative_appearance(tmp_path):
+    """
+    Накопительное появление: 3 слова, wpl=3 → 3 Dialogue.
+    Первая Dialogue содержит только слово1 (с тегом подсветки).
+    Вторая — слово1 и слово2.
+    Третья — слово3 с подсветкой; слово3 есть, слово1 и слово2 тоже.
+    Первая Dialogue НЕ содержит «слово2».
+    """
+    from app.pipeline.subtitles import build_ass
+
+    words = _make_words(3)
+    out = tmp_path / "cumul.ass"
+    build_ass(words, out, words_per_line=3)
+
+    content = out.read_text(encoding="utf-8")
+    dialogues = [ln for ln in content.splitlines() if ln.startswith("Dialogue:")]
+    assert len(dialogues) == 3, f"Ожидалось 3 Dialogue, найдено {len(dialogues)}"
+
+    # Первая: только слово1 (с тегом подсветки), нет слово2
+    assert "слово1" in dialogues[0], "слово1 не найдено в первой Dialogue"
+    assert "слово2" not in dialogues[0], "слово2 не должно быть в первой Dialogue"
+
+    # Вторая: слово1 и слово2 присутствуют
+    assert "слово1" in dialogues[1], "слово1 не найдено во второй Dialogue"
+    assert "слово2" in dialogues[1], "слово2 не найдено во второй Dialogue"
+
+    # Третья: слово3 с подсветкой (и слово1, слово2 тоже)
+    assert "слово3" in dialogues[2], "слово3 не найдено в третьей Dialogue"
+
+
+def test_ass_time_offset(tmp_path):
+    """
+    time_offset=1.0: первый тайминг субтитра сдвигается на 1 секунду.
+    При _make_words(2) start первого слова = 0.0 + 1.0 = 1.0 сек → «0:00:01.00».
+    """
+    from app.pipeline.subtitles import build_ass
+
+    words = _make_words(2)
+    out = tmp_path / "offset.ass"
+    build_ass(words, out, time_offset=1.0)
+
+    content = out.read_text(encoding="utf-8")
+    assert "0:00:01.00" in content, (
+        "Ожидался тайминг 0:00:01.00 (0.0 + 1.0 сек) в файле субтитров"
+    )
+
+
+# ─── Тесты _reattach_punctuation ─────────────────────────────────────────────
+
+
+def test_reattach_punctuation_basic():
+    """Слова с пунктуацией переналагаются на тайминги при совпадении длин."""
+    from app.pipeline.tts import _reattach_punctuation
+
+    raw = [("Привет", 0.0, 0.4), ("мир", 0.4, 0.8)]
+    result = _reattach_punctuation("Привет, мир!", raw)
+
+    assert result[0][0] == "Привет,", f"Ожидали 'Привет,', получили {result[0][0]!r}"
+    assert result[0][1] == 0.0
+    assert result[0][2] == 0.4
+    assert result[1][0] == "мир!", f"Ожидали 'мир!', получили {result[1][0]!r}"
+    assert result[1][1] == 0.4
+    assert result[1][2] == 0.8
+
+
+def test_reattach_punctuation_length_mismatch():
+    """При расхождении длин возвращает тайминги без изменений (graceful)."""
+    from app.pipeline.tts import _reattach_punctuation
+
+    raw = [("один", 0.0, 0.4)]
+    result = _reattach_punctuation("Раз два", raw)
+
+    # Возвращает оригинальный список без изменений
+    assert result == raw, f"Ожидали оригинальный список, получили {result}"
+
+
+# ─── Тесты _valid_rate / _valid_pitch ────────────────────────────────────────
+
+
+def test_valid_rate():
+    """_valid_rate принимает корректные значения и отвергает невалидные."""
+    from app.pipeline.tts import _valid_rate
+
+    assert _valid_rate("+10%") == "+10%"
+    assert _valid_rate("-10%") == "-10%"
+    assert _valid_rate("+0%")  == "+0%"
+    assert _valid_rate("ерунда") == "+0%"
+    assert _valid_rate("10")    == "+0%"
+    assert _valid_rate("+10")   == "+0%"   # нет знака %
+    assert _valid_rate("10%")   == "+0%"   # нет знака +/-
+
+
+def test_valid_pitch():
+    """_valid_pitch принимает корректные значения и отвергает невалидные."""
+    from app.pipeline.tts import _valid_pitch
+
+    assert _valid_pitch("+8Hz") == "+8Hz"
+    assert _valid_pitch("-8Hz") == "-8Hz"
+    assert _valid_pitch("+0Hz") == "+0Hz"
+    assert _valid_pitch("bad")  == "+0Hz"
+    assert _valid_pitch("8hz")  == "+0Hz"  # нет знака +/-
+    assert _valid_pitch("+8")   == "+0Hz"  # нет Hz
+
+
+# ─── Тест проброса rate/pitch в edge_tts.Communicate ─────────────────────────
+
+
+def test_rate_pitch_passed_to_communicate(tmp_path, monkeypatch):
+    """
+    rate и pitch должны быть переданы в edge_tts.Communicate.
+
+    Мокаем FakeCommunicate, который фиксирует переданные kwargs.
+    """
+    monkeypatch.delenv("FAKE_TTS", raising=False)
+
+    from app.pipeline import tts as tts_mod
+
+    captured_kwargs: dict = {}
+
+    class FakeCommunicate:
+        def __init__(self, text, voice, **kw):
+            captured_kwargs.update(kw)
+            self._proxy = kw.get("proxy")
+
+        def stream(self):
+            async def _gen():
+                yield {"type": "audio", "data": b"\xff\xfb\x90\x00" + b"\x00" * 413}
+                yield {
+                    "type": "WordBoundary",
+                    "offset": 0,
+                    "duration": 5_000_000,
+                    "text": "Текст",
+                }
+            return _gen()
+
+    fake_edge_tts = MagicMock()
+    fake_edge_tts.Communicate = FakeCommunicate
+
+    with (
+        patch.dict("sys.modules", {"edge_tts": fake_edge_tts}),
+        patch.object(tts_mod, "_get_http_proxies", return_value=[]),
+        patch.object(tts_mod, "_ffprobe_duration", return_value=1.0),
+    ):
+        out_path = tmp_path / "voice_01.mp3"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        tts_mod._synthesize_one_with_retry(
+            "Текст", "ru-RU-DmitryNeural", out_path,
+            rate="-10%", pitch="+8Hz",
+        )
+
+    assert captured_kwargs.get("rate")  == "-10%", f"rate не передан, kwargs={captured_kwargs}"
+    assert captured_kwargs.get("pitch") == "+8Hz",  f"pitch не передан, kwargs={captured_kwargs}"

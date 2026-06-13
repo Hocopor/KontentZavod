@@ -52,6 +52,10 @@ _FIELDS: dict[str, tuple[str, str, str]] = {
     # Шрифт может содержать пробел — НЕ добавляем в _SINGLE_TOKEN_FIELDS.
     "STORY_FONT":          ("STORY_FONT",           "Arial",                    "str"),
     "STORY_FONT_SIZE":     ("STORY_FONT_SIZE",      "96",                       "int"),
+    # Глобальный сдвиг таймингов субтитров в секундах (default 0.0).
+    # >0 — субтитры позже, для подстройки систематического лида edge-tts WordBoundary.
+    # Настраивается при приёмке без правки кода.
+    "SUBTITLE_OFFSET_SEC": ("SUBTITLE_OFFSET_SEC",  "0.0",                      "float"),
 }
 
 # Строковые поля, значения которых по своей природе не содержат пробелов
@@ -106,6 +110,8 @@ class Settings:
             return raw.strip().split()[0] == "1" if raw.strip() else False
         if kind == "int":
             return int(raw.strip().split()[0]) if raw.strip() else int(default)
+        if kind == "float":
+            return float(raw.strip().split()[0]) if raw.strip() else float(default)
         if name in _SINGLE_TOKEN_FIELDS:
             stripped = raw.strip()
             return stripped.split()[0] if stripped else ""

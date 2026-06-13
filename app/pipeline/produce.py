@@ -138,6 +138,10 @@ def produce_video(content_id: int) -> None:
     sub_outline_width   = int(proj_settings.get("sub_outline_width", 5))
     sub_highlight_color = proj_settings.get("sub_highlight_color", "#ffe600")
 
+    # Темп и тон озвучки из настроек проекта
+    tts_rate  = str(proj_settings.get("tts_rate",  "+0%"))
+    tts_pitch = str(proj_settings.get("tts_pitch", "+0Hz"))
+
     scene_texts = [s["text"] for s in scenes]
 
     # Рабочая директория для медиафайлов этого контента
@@ -147,7 +151,7 @@ def produce_video(content_id: int) -> None:
     try:
         # 3a. TTS
         logger.info("produce_video: content_id=%d → TTS (%d сцен)", content_id, len(scene_texts))
-        scene_audios = synthesize_scenes(scene_texts, media_dir, voice=voice)
+        scene_audios = synthesize_scenes(scene_texts, media_dir, voice=voice, rate=tts_rate, pitch=tts_pitch)
 
         # 3b. Субтитры
         all_words = []
@@ -160,6 +164,7 @@ def produce_video(content_id: int) -> None:
             outline_color=sub_outline_color,
             outline_width=sub_outline_width,
             highlight_color=sub_highlight_color,
+            time_offset=float(settings.SUBTITLE_OFFSET_SEC),
         )
         logger.info("produce_video: content_id=%d → субтитры построены", content_id)
 

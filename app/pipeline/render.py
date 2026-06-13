@@ -213,16 +213,33 @@ def _concat_clips(clips: list[Path], tmp_dir: Path, out_path: Path) -> None:
 
 def _concat_voice(scene_audios: list[SceneAudio], tmp_dir: Path, out_path: Path) -> None:
     """
-    Склеить голосовые mp3 сцен последовательно в один аудиофайл (AAC m4a).
-    Используем concat-фильтр (надёжнее demuxer'а при разном битрейте mp3).
+    Склеить голосовые mp3 сцен в один аудиофайл (AAC m4a) через adelay+amix.
+
+    Вместо concat-фильтра каждая сцена якорится в свой точный глобальный offset
+    через adelay=<ms>:all=1, затем все дорожки смешиваются amix(normalize=0).
+    Это устраняет накопление mp3 priming-тишины (без LAME/Xing-заголовка concat
+    копил паузу с каждой сценой → голос прогрессивно отставал от субтитров).
+    Перекрытий нет (сцены идут подряд) → суммирование без клиппинга, полная громкость.
+    Требует ffmpeg >= 4.4 (adelay поддержка all=1).
     """
     cmd = [settings.FFMPEG_BIN, "-y"]
     for sa in scene_audios:
         cmd += ["-i", str(sa.path)]
 
     n = len(scene_audios)
-    inputs = "".join(f"[{i}:a]" for i in range(n))
-    filter_complex = f"{inputs}concat=n={n}:v=0:a=1[out]"
+    filters: list[str] = []
+    labels: list[str] = []
+    offset: float = 0.0
+
+    for i, sa in enumerate(scene_audios):
+        delay_ms = int(round(offset * 1000))
+        filters.append(f"[{i}:a]adelay={delay_ms}:all=1[d{i}]")
+        labels.append(f"[d{i}]")
+        offset += sa.duration
+
+    mix = "".join(labels) + f"amix=inputs={n}:normalize=0[out]"
+    filter_complex = ";".join(filters + [mix])
+
     cmd += [
         "-filter_complex", filter_complex,
         "-map", "[out]",
@@ -230,7 +247,7 @@ def _concat_voice(scene_audios: list[SceneAudio], tmp_dir: Path, out_path: Path)
         "-b:a", "128k",
         str(out_path),
     ]
-    _run_ffmpeg(cmd, "склейка голосовых дорожек")
+    _run_ffmpeg(cmd, "склейка голосовых дорожек (adelay-якорь)")
 
 
 # ─── Проход 4: финальная сборка (видео + аудио + субтитры) ────────────────────
