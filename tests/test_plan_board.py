@@ -948,3 +948,31 @@ class TestPlanNavigation:
         assert resp.status_code == 200
         # Селектор или имена обоих проектов
         assert s1 in resp.text or "select" in resp.text.lower()
+
+    # ── goal-бейдж в модалке (этап 8.2, волна D) ─────────────────────────────
+
+    def test_modal_shows_goal_badge(self, client, patch_env):
+        """goal='sell' → в HTML модалки есть слово 'продажа'."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            iid = _create_plan_item(db, pid)
+            db.execute("UPDATE plan_items SET goal=? WHERE id=?", ("sell", iid))
+
+        resp = client.get(f"/plan/item/{iid}")
+        assert resp.status_code == 200
+        assert "продажа" in resp.text
+
+    def test_modal_no_goal_badge_when_null(self, client, patch_env):
+        """goal=NULL → в HTML модалки нет ни одной из подписей goal-бейджей."""
+        _setup_db()
+        with get_db() as db:
+            s, pid = _create_project(db)
+            iid = _create_plan_item(db, pid)
+            # goal остаётся NULL (не трогаем)
+
+        resp = client.get(f"/plan/item/{iid}")
+        assert resp.status_code == 200
+        # Ни одного из goal-бейджей рендериться не должно
+        for label in ("привлечение", "удержание", "продажа", "бренд"):
+            assert label not in resp.text

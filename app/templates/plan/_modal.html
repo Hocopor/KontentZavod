@@ -12,6 +12,15 @@
             {{ item.type_label }}
         </span>
         <span class="chip chip-{{ item.status }}">{{ item.status_label }}</span>
+        {% if goal == 'attract' %}
+        <span class="chip" style="background:rgba(56,189,248,.15);color:#38bdf8;">привлечение</span>
+        {% elif goal == 'retain' %}
+        <span class="chip" style="background:rgba(108,99,255,.15);color:#6c63ff;">удержание</span>
+        {% elif goal == 'sell' %}
+        <span class="chip" style="background:rgba(34,197,94,.15);color:#22c55e;">продажа</span>
+        {% elif goal == 'brand' %}
+        <span class="chip" style="background:rgba(249,115,22,.15);color:#f97316;">бренд</span>
+        {% endif %}
     </div>
 
     {% if item.error_text %}

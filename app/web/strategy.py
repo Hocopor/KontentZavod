@@ -163,11 +163,11 @@ def _render_phases(strategy: dict) -> list[dict]:
 
 def _active_directives(db, project_id: int) -> list[dict]:
     rows = db.execute(
-        "SELECT text, scope FROM directives "
+        "SELECT id, text, scope FROM directives "
         "WHERE project_id=? AND status='active' ORDER BY id",
         (project_id,),
     ).fetchall()
-    return [{"text": r["text"], "scope": r["scope"]} for r in rows]
+    return [{"id": r["id"], "text": r["text"], "scope": r["scope"]} for r in rows]
 
 
 def _build_context(request: Request, project, *, flash=None, error=None) -> dict:
@@ -289,6 +289,38 @@ async def strategy_reset(request: Request, slug: str):
     return RedirectResponse(f"/projects/{slug}/strategy", status_code=303)
 
 
+@router.post("/directives/{directive_id}/{action}")
+async def strategy_directive_action(
+    request: Request, slug: str, directive_id: int, action: str
+):
+    """Изменить статус директивы: action in ('done', 'dismissed').
+
+    - Проверяет принадлежность директивы проекту (404 если не та).
+    - Проверяет action (422 если не done/dismissed).
+    - UPDATE directives SET status=? → 303 на страницу стратегии.
+    """
+    if action not in ("done", "dismissed"):
+        return HTMLResponse("Неизвестное действие (допустимо: done, dismissed)", status_code=422)
+
+    project = _get_project(slug)
+    if project is None:
+        return HTMLResponse("Проект не найден", status_code=404)
+
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id, project_id FROM directives WHERE id=?", (directive_id,)
+        ).fetchone()
+        if row is None or row["project_id"] != project["id"]:
+            return HTMLResponse("Директива не найдена", status_code=404)
+
+        db.execute(
+            "UPDATE directives SET status=? WHERE id=?",
+            (action, directive_id),
+        )
+
+    return RedirectResponse(f"/projects/{slug}/strategy", status_code=303)
+
+
 @router.post("/edit")
 async def strategy_edit(request: Request, slug: str):
     """Ручная правка активной стратегии. Поля формы:
@@ -334,7 +366,22 @@ async def strategy_edit(request: Request, slug: str):
         pdata["kpi"] = (form.get(f"kpi_{p}") or "").strip()
 
         rubrics_raw = form.get(f"rubrics_{p}") or ""
-        pdata["rubrics"] = [r.strip() for r in rubrics_raw.splitlines() if r.strip()]
+        parsed_rubrics = []
+        for line in rubrics_raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if "|" in line:
+                parts = line.split("|", 2)
+                name = parts[0].strip()
+                goal_raw = parts[1].strip() if len(parts) > 1 else ""
+                desc = parts[2].strip() if len(parts) > 2 else ""
+                goal = goal_raw if goal_raw in ("attract", "retain", "sell", "brand") else "retain"
+                parsed_rubrics.append({"name": name, "goal": goal, "description": desc})
+            else:
+                # легаси-строка: оставить строкой
+                parsed_rubrics.append(line)
+        pdata["rubrics"] = parsed_rubrics
 
         times_raw = form.get(f"best_times_{p}") or ""
         pdata["best_times"] = [t.strip() for t in times_raw.split(",") if t.strip()]

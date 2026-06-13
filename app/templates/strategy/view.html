@@ -129,11 +129,30 @@
 {% if directives %}
 <div class="card mb-2">
     <h2 style="margin-bottom:.5rem;">📌 Директивы</h2>
-    <ul style="margin:0;padding-left:1.2rem;">
+    {% if directives %}
+    <ul style="margin:0;padding-left:0;list-style:none;">
         {% for d in directives %}
-        <li class="directive-item">{{ d.text }}<span class="directive-scope">{{ d.scope }}</span></li>
+        <li class="directive-item" style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;flex-wrap:wrap;">
+            <span style="flex:1;">{{ d.text }}</span>
+            <span class="directive-scope">{{ d.scope }}</span>
+            <form method="post" action="/projects/{{ project.slug }}/strategy/directives/{{ d.id }}/done" style="display:inline;">
+                <button type="submit" class="btn btn-secondary btn-sm"
+                        title="Убрать из обязательных — мозг перестанет её учитывать">✓ Выполнена</button>
+            </form>
+            <form method="post" action="/projects/{{ project.slug }}/strategy/directives/{{ d.id }}/dismissed" style="display:inline;">
+                <button type="submit" class="btn btn-secondary btn-sm">✕ Отклонить</button>
+            </form>
+        </li>
         {% endfor %}
     </ul>
+    {% else %}
+    <p class="text-muted">Активных директив нет.</p>
+    {% endif %}
+</div>
+{% else %}
+<div class="card mb-2">
+    <h2 style="margin-bottom:.5rem;">📌 Директивы</h2>
+    <p class="text-muted">Активных директив нет.</p>
 </div>
 {% endif %}
 
@@ -201,9 +220,10 @@
                 <input type="text" name="goals_{{ p.platform }}" value="{{ p.goals }}">
             </div>
             <div class="form-group">
-                <label>Рубрики (по одной на строку: «Название — описание»)</label>
-                <textarea name="rubrics_{{ p.platform }}" rows="4">{% for r in p.rubrics %}{{ r.name }}{% if r.description %} — {{ r.description }}{% endif %}
+                <label>Рубрики (по одной на строку: «Название | цель | описание» или просто «Название»)</label>
+                <textarea name="rubrics_{{ p.platform }}" rows="4">{% for r in p.rubrics %}{% if r.goal %}{{ r.name }} | {{ r.goal }} | {{ r.description }}{% else %}{{ r.name }}{% if r.description %} — {{ r.description }}{% endif %}{% endif %}
 {% endfor %}</textarea>
+                <div class="form-help">Цель: attract, retain, sell, brand. Пример: «Кейс клиента | attract | Реальные истории успеха»</div>
             </div>
             <div class="form-group">
                 <label>Контент-микс (штук в неделю)</label>
@@ -242,6 +262,7 @@
             <label for="user_comment">Комментарий для ИИ (необязательно)</label>
             <textarea id="user_comment" name="user_comment" rows="3"
                       placeholder="Например: больше видео, меньше текстовых постов; сделать тон легче…"></textarea>
+            <div class="form-help">Комментарий будет разобран на директивы — мозг обязан выполнять их во всех стратегиях и планах, пока вы не отметите их выполненными или не отклоните.</div>
         </div>
         <button type="submit" class="btn btn-secondary">🔁 Пересмотреть стратегию</button>
     </form>

@@ -52,6 +52,14 @@ _STATUS_COLORS = {
     "error":      "#ef4444",   # красный
 }
 
+# Русские подписи цели plan_item.goal
+_GOAL_LABELS = {
+    "attract": "привлечение",
+    "retain":  "удержание",
+    "sell":    "продажа",
+    "brand":   "бренд",
+}
+
 # Отображаемые имена платформ
 _PLATFORM_LABELS = {
     "telegram":  "Telegram",
@@ -267,10 +275,17 @@ def _render_modal(
     item["type_label"] = ti["label"] if ti else item["content_type"]
     item["platform_label"] = _PLATFORM_LABELS.get(item["platform"], item["platform"])
 
+    # goal-бейдж
+    goal = item.get("goal") or ""
+    goal_label = _GOAL_LABELS.get(goal, "")
+
     return templates.TemplateResponse(request, "plan/_modal.html", {
         "item": item,
         "error": error,
         "saved": saved,
+        "goal_label": goal_label,
+        "goal": goal,
+        "goal_labels": _GOAL_LABELS,
     })
 
 

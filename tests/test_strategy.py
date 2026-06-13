@@ -658,3 +658,201 @@ class TestStrategyV2:
         resp = client.get(f"/projects/{slug}/strategy")
         assert resp.status_code == 200
         assert "Старая рубрика" in resp.text
+
+
+# ─── 8. Директивы: управление статусом ────────────────────────────────────────
+
+
+class TestStrategyDirectives:
+
+    def test_directive_done(self, client):
+        """POST done → 303; в БД status == 'done'."""
+        _setup_db()
+        with get_db() as db:
+            project_id, slug = _create_project(db, platforms=("telegram",))
+            cur = db.execute(
+                "INSERT INTO directives (project_id, scope, text, status) VALUES (?,?,?,?)",
+                (project_id, "strategy", "7 постов в неделю", "active"),
+            )
+            did = cur.lastrowid
+
+        resp = client.post(
+            f"/projects/{slug}/strategy/directives/{did}/done",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        with get_db() as db:
+            status = db.execute(
+                "SELECT status FROM directives WHERE id=?", (did,)
+            ).fetchone()["status"]
+        assert status == "done"
+
+    def test_directive_dismissed(self, client):
+        """POST dismissed → 303; в БД status == 'dismissed'."""
+        _setup_db()
+        with get_db() as db:
+            project_id, slug = _create_project(db, platforms=("telegram",))
+            cur = db.execute(
+                "INSERT INTO directives (project_id, scope, text, status) VALUES (?,?,?,?)",
+                (project_id, "strategy", "Меньше продаж", "active"),
+            )
+            did = cur.lastrowid
+
+        resp = client.post(
+            f"/projects/{slug}/strategy/directives/{did}/dismissed",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        with get_db() as db:
+            status = db.execute(
+                "SELECT status FROM directives WHERE id=?", (did,)
+            ).fetchone()["status"]
+        assert status == "dismissed"
+
+    def test_unknown_action_422(self, client):
+        """POST с неизвестным action → 422; статус директивы остался 'active'."""
+        _setup_db()
+        with get_db() as db:
+            project_id, slug = _create_project(db, platforms=("telegram",))
+            cur = db.execute(
+                "INSERT INTO directives (project_id, scope, text, status) VALUES (?,?,?,?)",
+                (project_id, "strategy", "Тест", "active"),
+            )
+            did = cur.lastrowid
+
+        resp = client.post(
+            f"/projects/{slug}/strategy/directives/{did}/foobar",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 422
+
+        with get_db() as db:
+            status = db.execute(
+                "SELECT status FROM directives WHERE id=?", (did,)
+            ).fetchone()["status"]
+        assert status == "active"
+
+    def test_directive_not_found_404(self, client):
+        """POST на несуществующий directive_id → 404."""
+        _setup_db()
+        with get_db() as db:
+            project_id, slug = _create_project(db, platforms=("telegram",))
+
+        resp = client.post(
+            f"/projects/{slug}/strategy/directives/999999/done",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 404
+
+    def test_directive_other_project_404(self, client):
+        """Директива проекта A, запрос через slug проекта B → 404; директива не меняется."""
+        _setup_db()
+        with get_db() as db:
+            project_id_a, slug_a = _create_project(db, platforms=("telegram",))
+            project_id_b, slug_b = _create_project(db, platforms=("telegram",))
+            # Директива принадлежит проекту A
+            cur = db.execute(
+                "INSERT INTO directives (project_id, scope, text, status) VALUES (?,?,?,?)",
+                (project_id_a, "strategy", "Директива A", "active"),
+            )
+            did_a = cur.lastrowid
+
+        # Запрос через slug проекта B
+        resp = client.post(
+            f"/projects/{slug_b}/strategy/directives/{did_a}/done",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 404
+
+        # Директива проекта A не изменилась
+        with get_db() as db:
+            status = db.execute(
+                "SELECT status FROM directives WHERE id=?", (did_a,)
+            ).fetchone()["status"]
+        assert status == "active"
+
+    def test_unknown_slug_404(self, client):
+        """POST на несуществующий slug → 404."""
+        _setup_db()
+        resp = client.post(
+            "/projects/nonexistent-xyz-slug/strategy/directives/1/done",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 404
+
+
+# ─── 9. Правка рубрик с целью (strategy_edit) ─────────────────────────────────
+
+
+class TestStrategyEditRubricsGoal:
+
+    def _post_edit(self, client, slug, rubrics_telegram):
+        """Отправить форму редактирования стратегии с заданным rubrics_telegram."""
+        return client.post(
+            f"/projects/{slug}/strategy/edit",
+            data={
+                "summary": "Резюме",
+                "positioning": "Позиционирование",
+                "goals_telegram": "Цели",
+                "rubrics_telegram": rubrics_telegram,
+                "best_times_telegram": "09:00",
+                "kpi_telegram": "KPI",
+                "mix_telegram_post": "3",
+                "mix_telegram_video": "1",
+            },
+            follow_redirects=False,
+        )
+
+    def _get_active_strategy_platforms(self, db, project_id):
+        row = db.execute(
+            "SELECT strategy FROM strategies WHERE project_id=? AND status='active' "
+            "ORDER BY version DESC LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        assert row is not None, "Нет активной стратегии"
+        return json.loads(row["strategy"])["platforms"]
+
+    def test_edit_rubrics_with_goal(self, client):
+        """Строка 'Кейс клиента | attract | Истории успеха' парсится в dict; голая строка остаётся строкой."""
+        _setup_db()
+        with get_db() as db:
+            project_id, slug = _create_project(db, platforms=("telegram",))
+            sid = _create_strategy_row(db, project_id)
+        from app.pipeline.strategy import build_strategy
+        build_strategy(sid)
+
+        resp = self._post_edit(
+            client, slug,
+            "Кейс клиента | attract | Истории успеха\nПростая рубрика",
+        )
+        assert resp.status_code == 303
+
+        with get_db() as db:
+            platforms = self._get_active_strategy_platforms(db, project_id)
+
+        rubrics = platforms["telegram"]["rubrics"]
+        assert rubrics[0] == {"name": "Кейс клиента", "goal": "attract", "description": "Истории успеха"}
+        assert rubrics[1] == "Простая рубрика"
+
+    def test_edit_rubric_invalid_goal_defaults_retain(self, client):
+        """Невалидный goal ('wrongval') → заменяется на 'retain'."""
+        _setup_db()
+        with get_db() as db:
+            project_id, slug = _create_project(db, platforms=("telegram",))
+            sid = _create_strategy_row(db, project_id)
+        from app.pipeline.strategy import build_strategy
+        build_strategy(sid)
+
+        resp = self._post_edit(
+            client, slug,
+            "Имя | wrongval | описание",
+        )
+        assert resp.status_code == 303
+
+        with get_db() as db:
+            platforms = self._get_active_strategy_platforms(db, project_id)
+
+        rubrics = platforms["telegram"]["rubrics"]
+        assert rubrics[0]["goal"] == "retain"
