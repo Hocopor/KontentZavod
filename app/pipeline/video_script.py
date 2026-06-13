@@ -21,6 +21,7 @@ import re
 from app.db import get_db
 from app.llm import chat, LLMError
 from app.pipeline.censor import check_content, CensorError
+from app.pipeline.goals import goal_label, goal_guidance
 from app.pipeline.prompts import load_prompt, load_rules
 from app.pipeline.script import _PLATFORM_SPECS
 
@@ -133,13 +134,15 @@ def _parse_video_script_json(raw: str, enabled_platforms: list[str]) -> dict:
 # ─── Публичная функция ────────────────────────────────────────────────────────
 
 
-def generate_video_script(idea_id: int, template: str) -> int:
+def generate_video_script(idea_id: int, template: str, goal: str | None = None) -> int:
     """
     Генерирует видео-сценарий по идее.
 
     Args:
         idea_id:  ID идеи в таблице ideas.
         template: 'video_footage' | 'video_slideshow'
+        goal:     Маркетинговая цель пункта плана (plan_items.goal).
+                  None — нейтральная инструкция без прямых продаж.
 
     Returns:
         content_id — ID созданной записи в таблице content.
@@ -229,6 +232,8 @@ def generate_video_script(idea_id: int, template: str) -> int:
         IDEA_TEXT=idea["text"],
         PLATFORMS_SPEC=platforms_spec,
         RULES=load_rules(),
+        ITEM_GOAL_LABEL=goal_label(goal),
+        GOAL_GUIDANCE=goal_guidance(goal),
     )
 
     messages = [{"role": "user", "content": prompt}]

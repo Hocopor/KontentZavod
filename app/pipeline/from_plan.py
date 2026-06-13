@@ -21,6 +21,7 @@ from app.db import get_db
 from app.llm import chat, LLMError
 from app.pipeline.assets import fetch_image, _fake_image
 from app.pipeline.censor import check_content, CensorError
+from app.pipeline.goals import goal_label, goal_guidance
 from app.pipeline.prompts import load_prompt, load_rules
 from app.pipeline.script import _PLATFORM_SPECS
 from app.pipeline.video_script import generate_video_script
@@ -187,6 +188,7 @@ def _generate_text(db, item, project, brief) -> int:
     """Создать текстовый пост/статью. Возвращает content_id."""
     platform = item["platform"]
     content_type = item["content_type"]
+    goal = item["goal"]
 
     prompt = load_prompt(
         "item_post",
@@ -208,6 +210,8 @@ def _generate_text(db, item, project, brief) -> int:
         PROJECT_LEARNINGS=_learnings_text(db, project["id"]),
         PLATFORM_SPEC=_PLATFORM_SPECS.get(platform, ""),
         RULES=load_rules(),
+        ITEM_GOAL_LABEL=goal_label(goal),
+        GOAL_GUIDANCE=goal_guidance(goal),
     )
 
     messages = [{"role": "user", "content": prompt}]
@@ -322,6 +326,7 @@ def _generate_text(db, item, project, brief) -> int:
 def _generate_story(db, item, project, brief) -> int:
     """Создать историю с картинкой (Pexels/Pixabay/Openverse/Wikimedia). Возвращает content_id."""
     platform = item["platform"]
+    goal = item["goal"]
 
     prompt = load_prompt(
         "item_story",
@@ -342,6 +347,8 @@ def _generate_story(db, item, project, brief) -> int:
         ITEM_RUBRIC=brief["rubric"],
         PROJECT_LEARNINGS=_learnings_text(db, project["id"]),
         RULES=load_rules(),
+        ITEM_GOAL_LABEL=goal_label(goal),
+        GOAL_GUIDANCE=goal_guidance(goal),
     )
 
     messages = [{"role": "user", "content": prompt}]
@@ -438,7 +445,8 @@ def _generate_video(db, item, project, brief) -> int:
         idea_id = cur.lastrowid
 
     # Видео-сценарий (создаёт content type=template, status='text_review')
-    content_id = generate_video_script(idea_id, template="video_footage")
+    goal = item["goal"]
+    content_id = generate_video_script(idea_id, template="video_footage", goal=goal)
 
     # План одобрен — минуем text_review, сразу в продакшн
     with get_db() as wdb:

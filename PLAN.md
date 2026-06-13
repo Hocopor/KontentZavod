@@ -371,9 +371,9 @@ per-project дополнение — projects.settings['agent_rules'] (текс�
 - [x] `[S]` Слой «цензор»: УРОВЕНЬ 1 (превентивный) — секция `## Правила и запреты / <<RULES>>` (load_rules = AGENTS.md + forbidden_ru.md) добавлена в item_post.txt, item_story.txt, video_script.txt, RULES подставляется из from_plan/video_script. УРОВЕНЬ 2 (реактивный) — `app/pipeline/censor.py::check_content(text, context) -> (ok, reason)` через purpose='censor' (промпт censor.txt + forbidden_ru.md), `CensorError`; пост-проверка с регенерацией ≤2 → потом plan_items.status='error' («Цензор отклонил: …»). FAKE_CENSOR по умолчанию пропускает. **Дизайн-решение: fail-open при ТЕХНИЧЕСКОМ сбое цензора** (LLMError/мусор → пропуск + warning; блок только при явном verdict='block') — основная защита уровень 1, цензор не валит конвейер из-за своих сбоев.
 - [x] `[S]` Цензор применяется к: текстам постов (_generate_text), историям (overlay+caption+keywords, _generate_story), видео-сценариям (текст сцен + keywords ДО поиска футажей, generate_video_script). tests/test_censor.py (10). **697/697 ✅**
 
-### 8.4 (P1) Качество контента под маркетинг
-- [ ] `[S]` У каждого plan_item — маркетинговая цель (`goal: attract|retain|sell|brand`) из фазы стратегии; промпты генерации получают цель + фазу + правила AGENTS.md → контент пишется под задачу, а не «о чём-нибудь в тему». Продажи — только в пунктах с goal=sell.
-- [ ] `[S]` Ревизия промптов генерации (item_post/item_story/video_script): структура под цель, хуки, CTA только где уместен.
+### 8.4 (P1) Качество контента под маркетинг ✅ (2026-06-13, pytest 702/702)
+- [x] `[S]` У каждого plan_item — маркетинговая цель (`goal: attract|retain|sell|brand`, заполняется планнером из goal_share фазы — волна 8.2C). Новый `app/pipeline/goals.py` (GOAL_LABELS + goal_label/goal_guidance — единый источник инструкций по целям). Промпты item_post/item_story/video_script получают `<<ITEM_GOAL_LABEL>>` + `<<GOAL_GUIDANCE>>` (from_plan берёт `item["goal"]`, video — через новый параметр `generate_video_script(..., goal=None)`). attract/retain/brand явно НЕ продают; sell — единственный с прямым оффером.
+- [x] `[S]` Ревизия промптов генерации: секция «Маркетинговая цель этой публикации» + пункт в Требованиях «продающий оффер ТОЛЬКО при цели=продажа». tests/test_goals_marketing.py (5). **702/702 ✅**
 
 ### 8.5 (P1) Сторис 2.0 — осмысленные, как у людей
 Сейчас: отдельно фото + отдельно текст. Надо: изображение/видео С НАЛОЖЕННЫМ текстом (и смайлики), осмысленные форматы.
