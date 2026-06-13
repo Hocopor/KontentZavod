@@ -540,10 +540,8 @@ table.board td.row-head.type-header {
         <a class="plan-card st-{{ item.status }}"
            href="#"
            title="{{ item.status_label }}: {{ item.time_slot or '' }} {{ item.title }}"
-           hx-get="/plan/item/{{ item.id }}"
-           hx-target="#modal-content"
-           hx-swap="innerHTML"
-           onclick="openModal(event)">
+           data-modal-url="/plan/item/{{ item.id }}"
+           onclick="openModal(event, this)">
             {% if item.time_slot %}<span style="color:var(--text2);">{{ item.time_slot }}</span> {% endif %}{{ item.title[:30] }}{% if item.title | length > 30 %}…{% endif %}
         </a>
         {% endfor %}
@@ -561,14 +559,16 @@ table.board td.row-head.type-header {
 
 </div><!-- /plan-board-area -->
 
-<!-- HTMX: обновление модалки -->
-<div id="modal-trigger-container" style="display:none;"
-     hx-on:htmx:after-swap="openModalAfterLoad()"></div>
-
 <script>
-function openModal(evt) {
+function openModal(evt, el) {
     if (evt) evt.preventDefault();
     document.getElementById('modal-overlay').classList.add('open');
+    var url = el ? el.getAttribute('data-modal-url') : null;
+    if (url) {
+        document.getElementById('modal-content').innerHTML =
+            '<div style="padding:2rem;text-align:center;color:var(--text2);">Загрузка…</div>';
+        htmx.ajax('GET', url, {target: '#modal-content', swap: 'innerHTML'});
+    }
 }
 
 function closeModal() {

@@ -359,10 +359,8 @@
         {% for item in day_items %}
         <span class="q-dot {{ item.dot_class }}"
               title="{{ item.status_label }}: {{ item.time_slot or '' }} {{ item.title }}"
-              hx-get="/queue/items/{{ item.id }}/modal"
-              hx-target="#modal-content"
-              hx-swap="innerHTML"
-              onclick="openModal(event)"
+              data-modal-url="/queue/items/{{ item.id }}/modal"
+              onclick="openModal(event, this)"
               style="cursor:pointer;"></span>
         {% endfor %}
     </td>
@@ -576,9 +574,15 @@
 </div><!-- /queue-live -->
 
 <script>
-function openModal(evt) {
+function openModal(evt, el) {
     if (evt) evt.preventDefault();
     document.getElementById('modal-overlay').classList.add('open');
+    var url = el ? el.getAttribute('data-modal-url') : null;
+    if (url) {
+        document.getElementById('modal-content').innerHTML =
+            '<div style="padding:2rem;text-align:center;color:var(--text2);">Загрузка…</div>';
+        htmx.ajax('GET', url, {target: '#modal-content', swap: 'innerHTML'});
+    }
 }
 
 function closeModal() {
