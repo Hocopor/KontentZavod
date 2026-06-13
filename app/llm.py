@@ -682,6 +682,8 @@ _FAKE_STRATEGY_CHECK = json.dumps(
     ensure_ascii=False,
 )
 
+_FAKE_CENSOR = json.dumps({"verdict": "ok", "reason": ""}, ensure_ascii=False)
+
 _FAKE_ITEM_STORY = json.dumps(
     {
         "title": "Факт дня: органический охват вырос на 40% с одним изменением",
@@ -762,6 +764,8 @@ def chat(
             return _FAKE_DIRECTIVES_PARSE
         if purpose == "strategy_check":
             return _FAKE_STRATEGY_CHECK
+        if purpose == "censor":
+            return _FAKE_CENSOR
         return "FAKE_LLM response"
 
     # ── Реальный вызов ─────────────────────────────────────────────────────────

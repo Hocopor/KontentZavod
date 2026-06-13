@@ -20,7 +20,8 @@ import re
 
 from app.db import get_db
 from app.llm import chat, LLMError
-from app.pipeline.prompts import load_prompt
+from app.pipeline.censor import check_content, CensorError
+from app.pipeline.prompts import load_prompt, load_rules
 from app.pipeline.script import _PLATFORM_SPECS
 
 logger = logging.getLogger(__name__)
@@ -227,38 +228,74 @@ def generate_video_script(idea_id: int, template: str) -> int:
         PROJECT_LEARNINGS=learnings_text,
         IDEA_TEXT=idea["text"],
         PLATFORMS_SPEC=platforms_spec,
+        RULES=load_rules(),
     )
 
     messages = [{"role": "user", "content": prompt}]
 
     # ── 6. Вызов LLM + валидация ─────────────────────────────────────────────
-    raw = chat(messages, purpose="video_script", json_mode=True)
-    try:
-        data = _parse_video_script_json(raw, enabled_platforms_for_video)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning(
-            "video_script: первая попытка парсинга провалилась (%s), retry", exc
-        )
-        retry_messages = messages + [
-            {"role": "assistant", "content": raw},
-            {
-                "role": "user",
-                "content": (
-                    f"Ошибка: {exc}. "
-                    "Ответь ТОЛЬКО валидным JSON-объектом строго по формату из задания. "
-                    "Обязательные ключи: title, video (voice/mood/scenes), features, "
-                    f"и блоки для площадок: "
-                    f"{', '.join(enabled_platforms_for_video)}."
-                ),
-            },
-        ]
-        raw2 = chat(retry_messages, purpose="video_script", json_mode=True)
+
+    def _obtain_script(msgs: list) -> dict:
+        """Вызвать LLM и получить валидный JSON сценария (с одним retry)."""
+        raw = chat(msgs, purpose="video_script", json_mode=True)
         try:
-            data = _parse_video_script_json(raw2, enabled_platforms_for_video)
-        except (json.JSONDecodeError, ValueError) as exc2:
-            raise LLMError(
-                f"LLM вернул невалидный JSON видео-сценария после двух попыток: {exc2}"
-            ) from exc2
+            return _parse_video_script_json(raw, enabled_platforms_for_video)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                "video_script: первая попытка парсинга провалилась (%s), retry", exc
+            )
+            retry_msgs = msgs + [
+                {"role": "assistant", "content": raw},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Ошибка: {exc}. "
+                        "Ответь ТОЛЬКО валидным JSON-объектом строго по формату из задания. "
+                        "Обязательные ключи: title, video (voice/mood/scenes), features, "
+                        f"и блоки для площадок: "
+                        f"{', '.join(enabled_platforms_for_video)}."
+                    ),
+                },
+            ]
+            raw2 = chat(retry_msgs, purpose="video_script", json_mode=True)
+            try:
+                return _parse_video_script_json(raw2, enabled_platforms_for_video)
+            except (json.JSONDecodeError, ValueError) as exc2:
+                raise LLMError(
+                    f"LLM вернул невалидный JSON видео-сценария после двух попыток: {exc2}"
+                ) from exc2
+
+    data = _obtain_script(messages)
+
+    # ── 6а. Цензура сценария ──────────────────────────────────────────────────
+    for attempt in range(2):  # до 2 регенераций после первой
+        scenes = (data.get("video") or {}).get("scenes") or []
+        blob_parts = [data.get("title", "")]
+        for sc in scenes:
+            if isinstance(sc, dict):
+                blob_parts.append(str(sc.get("text", "")))
+                kw = sc.get("keywords")
+                if isinstance(kw, list):
+                    blob_parts.append(" ".join(str(k) for k in kw))
+        for p in enabled_platforms_for_video:
+            block = data.get(p)
+            if isinstance(block, dict):
+                for v in block.values():
+                    blob_parts.append(str(v))
+        ok, reason = check_content(
+            "\n".join(x for x in blob_parts if x),
+            context="видео-сценарий (текст и ключевые слова поиска футажей)"
+        )
+        if ok:
+            break
+        if attempt == 1:
+            raise CensorError(reason)
+        logger.info("video_script: цензор отклонил (%s), регенерация %d", reason, attempt + 1)
+        regen_messages = messages + [
+            {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)},
+            {"role": "user", "content": f"Сценарий отклонён модератором по причине: {reason}. Перепиши сценарий и ключевые слова, полностью убрав нарушение, сохранив формат JSON и пользу."},
+        ]
+        data = _obtain_script(regen_messages)
 
     # ── 7. Сформировать texts — video + платформенные блоки ──────────────────
     # Хранится: video-блок + блоки включённых площадок (кроме dzen)

@@ -20,7 +20,8 @@ from app import catalog
 from app.db import get_db
 from app.llm import chat, LLMError
 from app.pipeline.assets import fetch_image, _fake_image
-from app.pipeline.prompts import load_prompt
+from app.pipeline.censor import check_content, CensorError
+from app.pipeline.prompts import load_prompt, load_rules
 from app.pipeline.script import _PLATFORM_SPECS
 from app.pipeline.video_script import generate_video_script
 from app.config import settings
@@ -206,11 +207,30 @@ def _generate_text(db, item, project, brief) -> int:
         ITEM_RUBRIC=brief["rubric"],
         PROJECT_LEARNINGS=_learnings_text(db, project["id"]),
         PLATFORM_SPEC=_PLATFORM_SPECS.get(platform, ""),
+        RULES=load_rules(),
     )
 
-    data = _chat_with_retry(
-        [{"role": "user", "content": prompt}], "item_post", _parse_item_post
-    )
+    messages = [{"role": "user", "content": prompt}]
+    data = None
+    for attempt in range(3):
+        data = _chat_with_retry(messages, "item_post", _parse_item_post)
+        blob = "\n".join(str(x) for x in [
+            data.get("title", ""),
+            data.get("text", ""),
+            " ".join(data.get("hashtags") or []) if isinstance(data.get("hashtags"), list) else "",
+            data.get("image_prompt", ""),
+            " ".join(str(k) for k in (data.get("image_keywords") or [])) if isinstance(data.get("image_keywords"), list) else "",
+        ] if x)
+        ok, reason = check_content(blob, context="пост")
+        if ok:
+            break
+        if attempt == 2:
+            raise CensorError(reason)
+        logger.info("_generate_text: цензор отклонил (%s), регенерация %d", reason, attempt + 1)
+        messages = messages + [
+            {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)},
+            {"role": "user", "content": f"Контент отклонён модератором по причине: {reason}. Перепиши, полностью убрав нарушение, сохранив пользу и тему поста. Верни тот же JSON-формат."},
+        ]
 
     title = data.get("title") or item["title"] or ""
     text = data["text"]
@@ -321,11 +341,30 @@ def _generate_story(db, item, project, brief) -> int:
         ITEM_KEYWORDS=brief["keywords"],
         ITEM_RUBRIC=brief["rubric"],
         PROJECT_LEARNINGS=_learnings_text(db, project["id"]),
+        RULES=load_rules(),
     )
 
-    data = _chat_with_retry(
-        [{"role": "user", "content": prompt}], "item_story", _parse_item_story
-    )
+    messages = [{"role": "user", "content": prompt}]
+    data = None
+    for attempt in range(3):
+        data = _chat_with_retry(messages, "item_story", _parse_item_story)
+        blob = "\n".join(str(x) for x in [
+            data.get("title", ""),
+            data.get("overlay_text", ""),
+            data.get("caption", ""),
+            data.get("image_prompt", ""),
+            " ".join(str(k) for k in (data.get("image_keywords") or [])) if isinstance(data.get("image_keywords"), list) else "",
+        ] if x)
+        ok, reason = check_content(blob, context="история")
+        if ok:
+            break
+        if attempt == 2:
+            raise CensorError(reason)
+        logger.info("_generate_story: цензор отклонил (%s), регенерация %d", reason, attempt + 1)
+        messages = messages + [
+            {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)},
+            {"role": "user", "content": f"Контент отклонён модератором по причине: {reason}. Перепиши, полностью убрав нарушение, сохранив пользу и тему поста. Верни тот же JSON-формат."},
+        ]
 
     title = data.get("title") or item["title"] or ""
     image_prompt = data["image_prompt"]
@@ -480,6 +519,10 @@ def generate_for_item(item_id: int) -> int | None:
         )
         return content_id
 
+    except CensorError as exc:
+        logger.warning("generate_for_item: item_id=%d отклонён цензором: %s", item_id, exc.reason)
+        _set_item_error(item_id, f"Цензор отклонил контент: {exc.reason}")
+        return None
     except LLMError as exc:
         logger.warning("generate_for_item: item_id=%d LLMError: %s", item_id, exc)
         _set_item_error(item_id, f"Ошибка LLM: {exc}")
