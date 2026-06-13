@@ -247,10 +247,18 @@ def _get_manual_pending(db, project_id: int) -> list[dict]:
         except (json.JSONDecodeError, TypeError):
             item["files_parsed"] = {}
         item["platform_label"] = _PLATFORM_LABELS.get(item["platform"], item["platform"])
-        # Текст для копирования: instagram берёт caption
+        # Индексы слайдов для сторис (волна 8.5B)
+        slides = item["files_parsed"].get("slides") if isinstance(item["files_parsed"], dict) else None
+        item["slide_indexes"] = list(range(1, len(slides) + 1)) if isinstance(slides, list) else []
+        # Текст для копирования: story → caption; instagram → caption; иначе text
         texts = item["texts_parsed"]
         plat = item["platform"]
-        if plat == "instagram":
+        if item["type"] == "story":
+            item["copy_text"] = (
+                texts.get(plat, {}).get("caption")
+                or next((v.get("caption", "") for v in texts.values() if isinstance(v, dict)), "")
+            )
+        elif plat == "instagram":
             item["copy_text"] = (
                 texts.get("instagram", {}).get("caption")
                 or texts.get("instagram", {}).get("text")

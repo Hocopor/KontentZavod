@@ -93,18 +93,29 @@
 
 {% elif content.type == 'story' %}
 <div style="margin-bottom:.8rem;">
-    <img src="/files/images/{{ content.id }}.jpg"
-         alt="{{ content.title or 'Story' }}"
-         style="width:100%;border-radius:var(--radius);max-height:360px;
-                object-fit:contain;background:#000;">
+    {% set slides = content.files_parsed.get('slides', []) if content.files_parsed else [] %}
+    {% if slides %}
+    <div style="display:flex;gap:.5rem;overflow-x:auto;padding-bottom:.35rem;">
+        {% for n in range(1, slides|length + 1) %}
+        <div style="flex:0 0 auto;text-align:center;">
+            <img src="/files/stories/{{ content.id }}/{{ n }}.jpg" alt="Слайд {{ n }}"
+                 style="width:120px;height:213px;object-fit:cover;border-radius:var(--radius);background:#000;border:1px solid var(--border);">
+            <div style="margin-top:.25rem;">
+                <a href="/files/stories/{{ content.id }}/{{ n }}.jpg" download
+                   class="btn btn-secondary btn-sm">Слайд {{ n }}</a>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    <div style="font-size:.76rem;color:var(--text2);margin-top:.3rem;">Слайдов: {{ slides|length }} — публикуются по порядку.</div>
+    {% else %}
+    <img src="/files/images/{{ content.id }}.jpg" alt="{{ content.title or 'Story' }}"
+         style="width:100%;border-radius:var(--radius);max-height:360px;object-fit:contain;background:#000;">
+    {% endif %}
     {% set capt = content.texts_parsed.get(item.platform, {}).get('caption', '') %}
     {% if capt %}
     <div style="margin-top:.4rem;font-size:.85rem;color:var(--text2);">{{ capt }}</div>
     {% endif %}
-    <div style="margin-top:.4rem;">
-        <a href="/files/images/{{ content.id }}.jpg" download
-           class="btn btn-secondary btn-sm">Скачать картинку</a>
-    </div>
 </div>
 
 {% else %}

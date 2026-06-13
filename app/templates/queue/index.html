@@ -448,17 +448,28 @@
                class="btn btn-secondary btn-sm" style="margin-top:.4rem;">Скачать mp4</a>
         </div>
         {% elif mi.type == 'story' %}
-        <div style="margin-top:.6rem;">
-            <img src="/files/images/{{ mi.content_id }}.jpg"
-                 alt="{{ mi.title or 'Story' }}"
-                 style="max-height:250px;border-radius:var(--radius);object-fit:contain;background:#000;">
-            {% set caption = mi.texts_parsed.get(mi.platform, {}).get('caption', '') %}
-            {% if caption %}
-            <div style="margin-top:.4rem;font-size:.85rem;color:var(--text2);">{{ caption }}</div>
-            {% endif %}
-            <a href="/files/images/{{ mi.content_id }}.jpg" download
-               class="btn btn-secondary btn-sm" style="margin-top:.4rem;">Скачать картинку</a>
+        {% if mi.slide_indexes %}
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.4rem;">
+            {% for n in mi.slide_indexes %}
+            <div style="text-align:center;">
+                <img src="/files/stories/{{ mi.content_id }}/{{ n }}.jpg" alt="Слайд {{ n }}"
+                     style="width:92px;height:164px;object-fit:cover;border-radius:6px;background:#000;border:1px solid var(--border);">
+                <div style="margin-top:.2rem;">
+                    <a href="/files/stories/{{ mi.content_id }}/{{ n }}.jpg" download
+                       class="btn btn-secondary btn-sm">Слайд {{ n }}</a>
+                </div>
+            </div>
+            {% endfor %}
         </div>
+        <div style="font-size:.78rem;color:var(--text2);margin-top:.3rem;">
+            Опубликуй слайды по порядку (1 → {{ mi.slide_indexes | length }}); подпись — кнопкой «Копировать текст» выше.
+        </div>
+        {% else %}
+        <img src="/files/images/{{ mi.content_id }}.jpg" alt="story"
+             style="max-width:160px;border-radius:6px;background:#000;margin-top:.4rem;">
+        <a href="/files/images/{{ mi.content_id }}.jpg" download
+           class="btn btn-secondary btn-sm" style="margin-top:.4rem;">Скачать картинку</a>
+        {% endif %}
         {% endif %}
 
         <!-- Форма: URL + кнопка «Опубликовано» -->

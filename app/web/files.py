@@ -2,12 +2,14 @@
 Раздача финальных медиафайлов.
 
 Маршруты:
-    GET /files/videos/{content_id}.mp4  — финальное видео
-    GET /files/videos/{content_id}.jpg  — превью-постер
-    GET /files/images/{content_id}.jpg  — картинка истории (story)
+    GET /files/videos/{content_id}.mp4          — финальное видео
+    GET /files/videos/{content_id}.jpg          — превью-постер
+    GET /files/images/{content_id}.jpg          — первый слайд истории (story)
+    GET /files/stories/{content_id}/{idx}.jpg   — слайд истории №idx (1-based)
 
 Видео хранятся в {DATA_DIR}/videos/{content_id}.mp4 / .jpg,
-story-картинки — в {DATA_DIR}/media/{content_id}/story.jpg (см. from_plan.py).
+слайды сторис — в {DATA_DIR}/media/{content_id}/slide_N.jpg (волна 8.5A).
+Легаси story-картинка — {DATA_DIR}/media/{content_id}/story.jpg (до волны 8.5A).
 Возвращает 404 если файл не найден.
 
 Примечание: produce.py сохраняет пути абсолютно в content.files,
@@ -41,10 +43,22 @@ async def serve_preview(content_id: int) -> Response:
     return FileResponse(str(path), media_type="image/jpeg")
 
 
+@router.get("/stories/{content_id}/{idx}.jpg")
+async def serve_story_slide(content_id: int, idx: int) -> Response:
+    """Отдать слайд истории №idx (1-based) для content_id."""
+    path = settings.data_dir_absolute / "media" / str(content_id) / f"slide_{idx}.jpg"
+    if not path.exists():
+        return Response(status_code=404, content="Слайд не найден")
+    return FileResponse(str(path), media_type="image/jpeg")
+
+
 @router.get("/images/{content_id}.jpg")
 async def serve_story_image(content_id: int) -> Response:
-    """Отдать story-картинку для content_id (генерит from_plan.py)."""
-    path = settings.data_dir_absolute / "media" / str(content_id) / "story.jpg"
+    """Отдать первый слайд истории (или легаси story.jpg) для content_id."""
+    media = settings.data_dir_absolute / "media" / str(content_id)
+    path = media / "slide_1.jpg"
+    if not path.exists():
+        path = media / "story.jpg"   # легаси-контент до волны 8.5A
     if not path.exists():
         return Response(status_code=404, content="Картинка не найдена")
     return FileResponse(str(path), media_type="image/jpeg")
