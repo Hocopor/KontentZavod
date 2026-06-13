@@ -377,9 +377,36 @@ per-project дополнение — projects.settings['agent_rules'] (текс�
 
 ### 8.5 (P1) Сторис 2.0 — осмысленные, как у людей
 Сейчас: отдельно фото + отдельно текст. Надо: изображение/видео С НАЛОЖЕННЫМ текстом (и смайлики), осмысленные форматы.
-- [ ] `[оркестратор]` Спроектировать рендер сторис: наложение текста на картинку 1080x1920 (ffmpeg drawtext с шрифтом, подложкой-плашкой, переносами; эмодзи — через подготовленный PNG-стикер или шрифт с эмодзи — проверить), JSON-схема сторис от LLM (тип, слайды, текст per слайд, позиция/стиль).
-- [ ] `[S]` Форматы: серия-карусель (мини-история на 2–5 слайдов), одиночная открытка (доброе утро/спокойной ночи/хорошего дня), изредка слайд со ссылкой на продукт (только goal=sell). Тип и содержание диктует план/стратегия.
-- [ ] `[S]` Публикация серии: VK stories по порядку; IG — ручная очередь с пронумерованными слайдами.
+- [x] `[оркестратор]` Спроектировано (2026-06-13) — контракт ниже. **Рендер через ASS/libass (НЕ drawtext) — подтверждён экспериментом: кириллица + плашка (BorderStyle=3) + переносы (\N) + позиция (\an) на фоне 1080×1920 рендерятся одним кадром JPG, читается отлично.** drawtext отвергнут (мучается с кириллицей/путями/многострочностью на Windows; libass уже отлажен в render.py). Эмодзи в НАЛОЖЕНИИ не рендерим (libass без emoji-шрифта даёт тофу, на Linux-сервере seguiemj нет) — `_strip_emoji` вырезает их из текста слайда; в caption поста эмодзи остаются.
+- [x] `[S]` **ВОЛНА A (ядро) ✅ (2026-06-13, 711/711):** config STORY_FONT/STORY_FONT_SIZE; story_render.py (render_story_slides через ASS+ffmpeg, _strip_emoji, фон fetch_image→fallback lavfi); item_story v2-схема (slides/story_type/position) + промпт; _parse_item_story v2+легаси, _normalize_story_slides, _generate_story переписан (цензор-петля и GOAL/RULES сохранены, blob покрывает caption+слайды); test_story_render.py (9). **Контрольный смоук оркестратора реальным ffmpeg: 2 слайда 1080×1920 с кириллицей, плашкой, переносом \N, позицией bottom — отрендерены и проверены глазами ✅.**
+- [ ] `[S]` **ВОЛНА B (публикация+UI):** ручная очередь с пронумерованными слайдами (VK+IG), превью карусели в /queue; VK stories авто — опционально (user_token+scope stories; иначе ручная).
+
+#### Контракт 8.5 (зафиксирован оркестратором — менять только через PLAN)
+
+**1. Схема item_story v2 (JSON, purpose='item_story'):**
+```json
+{
+  "story_type": "card" | "carousel",
+  "slides": [
+    {"text": "Короткий текст слайда (1–7 слов, допустим \\n для строк)",
+     "image_keywords": ["english", "keyword"], "position": "center"|"top"|"bottom"}
+  ],
+  "caption": "Подпись поста (эмодзи допустимы — идут в текст поста, не в наложение)",
+  "features": {"hook_type","topic","length","format":"story","ab_variant"}
+}
+```
+card → ровно 1 слайд; carousel → 2–5 слайдов. goal=sell → допустим финальный слайд-CTA (решает LLM по <<GOAL_GUIDANCE>>). **Слой совместимости:** если LLM вернул старый формат (нет `slides`, но есть `overlay_text`/`image_prompt`) — код синтезирует 1 слайд {text: overlay_text, image_keywords, position:"center"}.
+
+**2. Рендер `app/pipeline/story_render.py` (новый):**
+- `render_story_slides(slides, out_dir, *, font, font_size) -> list[Path]` — на каждый слайд: `fetch_image(slide["image_keywords"], bg)` (фон через assets.fetch_image, FAKE_ASSETS сам обрабатывается) → ASS (1 Dialogue, стиль: Fontname=font, Fontsize, Bold, PrimaryColour белый, BorderStyle=3 + BackColour=&H96000000 плашка, Alignment по position: top=8/center=5/bottom=2, MarginV) → ffmpeg `-loop 1 -i bg -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles='<esc>'" -frames:v 1 slide_N.jpg`. Возврат — пути по порядку.
+- `_strip_emoji(text)` — regex по Unicode-диапазонам эмодзи, применяется к тексту ДО ASS.
+- Переиспользовать `render.escape_subtitles_path`, `_run_ffmpeg`-паттерн, `settings.FFMPEG_BIN`. В тестах мокать `_run_ffmpeg` + `fetch_image`.
+
+**3. config:** `STORY_FONT` (str, default "Arial"; сервер — DejaVu Sans/Liberation Sans Bold), `STORY_FONT_SIZE` (int, default 96).
+
+**4. from_plan._generate_story:** парсинг v2 (slides) с фоллбэком v1 → `_strip_emoji` по text слайдов → `render_story_slides` → `files.slides=[пути]`, `files.image_path`=первый слайд (превью/совместимость). Цензор-петля (8.3) остаётся: blob = caption + тексты слайдов + keywords. caption в texts[platform].
+
+**5. Тесты `tests/test_story_render.py`:** _strip_emoji; ASS-стиль по position (alignment); render_story_slides зовёт ffmpeg N раз (мок) → N путей; from_plan v2 (slides → files.slides) и v1-фоллбэк (overlay_text → 1 слайд).
 
 ### 8.6 (P1) Субтитры и озвучка — синхрон и пунктуация
 - [ ] `[O]` Субтитры: со знаками препинания (сейчас точки теряются); режим «появление по мере речи» — слово появляется В МОМЕНТ произнесения (накопительное появление через ASS `{\k}`-тайминги с пустым стартом, а не весь блок сразу + жёлтая подсветка); устранить рассинхрон аудио/видео (проверить сдвиг таймингов edge-tts WordBoundary vs реальный mp3).

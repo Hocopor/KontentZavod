@@ -19,7 +19,8 @@ import re
 from app import catalog
 from app.db import get_db
 from app.llm import chat, LLMError
-from app.pipeline.assets import fetch_image, _fake_image
+from app.pipeline.assets import fetch_image
+from app.pipeline.story_render import render_story_slides
 from app.pipeline.censor import check_content, CensorError
 from app.pipeline.goals import goal_label, goal_guidance
 from app.pipeline.prompts import load_prompt, load_rules
@@ -56,18 +57,56 @@ def _parse_item_post(raw: str) -> dict:
 
 
 def _parse_item_story(raw: str) -> dict:
-    """Парсит и валидирует JSON истории. Бросает ValueError при невалидной структуре."""
+    """Парсит и валидирует JSON истории v2 или легаси. Бросает ValueError при нарушении.
+
+    Валиден ЛИБО v2 (непустой список slides, у каждого dict с непустым text),
+    ЛИБО легаси (есть image_prompt И caption). Общее: caption обязателен, features обязателен.
+    """
     data = json.loads(_strip_fences(raw))
     if not isinstance(data, dict):
         raise ValueError("Ответ должен быть JSON-объектом")
-    if not data.get("image_prompt"):
-        raise ValueError("Отсутствует поле 'image_prompt'")
     if not data.get("caption"):
         raise ValueError("Отсутствует поле 'caption'")
     if not isinstance(data.get("features"), dict):
         raise ValueError("Отсутствует или невалидно поле 'features'")
-    # image_keywords — необязательное поле (новые промпты включают, старые — нет)
+
+    slides = data.get("slides")
+    is_v2 = (
+        isinstance(slides, list)
+        and len(slides) > 0
+        and all(isinstance(s, dict) and s.get("text") for s in slides)
+    )
+    is_legacy = bool(data.get("image_prompt"))
+
+    if not is_v2 and not is_legacy:
+        raise ValueError(
+            "Ответ должен содержать либо непустой 'slides' (v2), "
+            "либо 'image_prompt' (легаси)"
+        )
     return data
+
+
+def _normalize_story_slides(data: dict) -> list[dict]:
+    """Слайды v2 как есть; легаси (overlay_text/image_prompt) → один слайд center."""
+    slides = data.get("slides")
+    if isinstance(slides, list) and slides:
+        out = []
+        for s in slides:
+            if isinstance(s, dict) and s.get("text"):
+                out.append({
+                    "text": str(s["text"]),
+                    "image_keywords": [str(k) for k in (s.get("image_keywords") or []) if k],
+                    "position": s.get("position") if s.get("position") in ("center", "top", "bottom") else "center",
+                })
+        if out:
+            return out
+    # легаси-фоллбэк
+    overlay = data.get("overlay_text") or data.get("title") or "—"
+    kw = data.get("image_keywords")
+    if not (isinstance(kw, list) and kw):
+        ip = data.get("image_prompt") or ""
+        kw = ip.split()[:5]
+    return [{"text": str(overlay), "image_keywords": [str(k) for k in kw if k], "position": "center"}]
 
 
 # ─── Сбор контекста ───────────────────────────────────────────────────────────
@@ -324,7 +363,7 @@ def _generate_text(db, item, project, brief) -> int:
 
 
 def _generate_story(db, item, project, brief) -> int:
-    """Создать историю с картинкой (Pexels/Pixabay/Openverse/Wikimedia). Возвращает content_id."""
+    """Создать историю-слайды (сторис 2.0, этап 8.5). Возвращает content_id."""
     platform = item["platform"]
     goal = item["goal"]
 
@@ -355,12 +394,16 @@ def _generate_story(db, item, project, brief) -> int:
     data = None
     for attempt in range(3):
         data = _chat_with_retry(messages, "item_story", _parse_item_story)
-        blob = "\n".join(str(x) for x in [
-            data.get("title", ""),
-            data.get("overlay_text", ""),
+        # Цензор-блоб для v2: caption + тексты всех слайдов + все image_keywords слайдов
+        slides_for_censor = _normalize_story_slides(data)
+        slide_texts = " ".join(s["text"] for s in slides_for_censor)
+        slide_keywords = " ".join(
+            " ".join(s.get("image_keywords") or []) for s in slides_for_censor
+        )
+        blob = "\n".join(x for x in [
             data.get("caption", ""),
-            data.get("image_prompt", ""),
-            " ".join(str(k) for k in (data.get("image_keywords") or [])) if isinstance(data.get("image_keywords"), list) else "",
+            slide_texts,
+            slide_keywords,
         ] if x)
         ok, reason = check_content(blob, context="история")
         if ok:
@@ -374,20 +417,12 @@ def _generate_story(db, item, project, brief) -> int:
         ]
 
     title = data.get("title") or item["title"] or ""
-    image_prompt = data["image_prompt"]
-    overlay_text = data.get("overlay_text") or ""
     caption = data["caption"]
+    slides = _normalize_story_slides(data)
+    story_type = data.get("story_type") or ("carousel" if len(slides) > 1 else "card")
 
-    # Ключевые слова для стокового поиска (новые промпты включают image_keywords)
-    # Фоллбэк: первые 5 слов image_prompt
-    raw_story_keywords = data.get("image_keywords")
-    if isinstance(raw_story_keywords, list) and raw_story_keywords:
-        story_image_keywords: list[str] = [str(k) for k in raw_story_keywords if k]
-    else:
-        story_image_keywords = image_prompt.split()[:5]
-
-    # ── Создать content СНАЧАЛА (нужен content_id для пути картинки) ──────────
-    texts = {platform: {"caption": caption, "overlay_text": overlay_text}}
+    # ── Создать content СНАЧАЛА (нужен content_id для путей слайдов) ──────────
+    texts = {platform: {"caption": caption, "story_type": story_type}}
     with get_db() as wdb:
         cur = wdb.execute(
             """
@@ -404,20 +439,21 @@ def _generate_story(db, item, project, brief) -> int:
         )
         content_id = cur.lastrowid
 
-    # ── Картинка истории (единая цепочка: Pexels → Pixabay → Openverse → Wikimedia) ───
+    # ── Рендер слайдов через story_render ─────────────────────────────────────
     media_dir = settings.data_dir_absolute / "media" / str(content_id)
     media_dir.mkdir(parents=True, exist_ok=True)
-    image_path = media_dir / "story.jpg"
+    slide_paths = render_story_slides(
+        slides, media_dir,
+        font=settings.STORY_FONT,
+        font_size=settings.STORY_FONT_SIZE,
+    )
+    if not slide_paths:
+        raise RuntimeError("Не удалось отрендерить слайды истории")
 
-    # fetch_image сам обрабатывает FAKE_ASSETS
-    ok = fetch_image(story_image_keywords, image_path)
-    if not ok:
-        raise RuntimeError(
-            "Не удалось получить картинку истории "
-            "(Pexels/Pixabay/Openverse/Wikimedia все недоступны)"
-        )
-
-    files = {"image_path": str(image_path.absolute())}
+    files = {
+        "slides": [str(p.absolute()) for p in slide_paths],
+        "image_path": str(slide_paths[0].absolute()),
+    }
     with get_db() as wdb:
         wdb.execute(
             "UPDATE content SET files=?, updated_at=datetime('now') WHERE id=?",

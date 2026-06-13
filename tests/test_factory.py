@@ -196,7 +196,19 @@ class TestTextItem:
 
 
 class TestStoryItem:
-    def test_instagram_story(self, db_ready):
+    def test_instagram_story(self, db_ready, monkeypatch, tmp_path):
+        import app.pipeline.from_plan as fp_module
+        from pathlib import Path
+
+        # Мокируем render_story_slides — не вызываем реальный ffmpeg
+        fake_slide = tmp_path / "slide_1.jpg"
+        fake_slide.write_bytes(b"fake")
+
+        def fake_render(slides, out_dir, *, font=None, font_size=None):
+            return [fake_slide]
+
+        monkeypatch.setattr(fp_module, "render_story_slides", fake_render)
+
         with get_db() as db:
             pid = _create_project(db, platforms=("instagram",))
             item_id = _create_plan_item(
@@ -214,12 +226,15 @@ class TestStoryItem:
         texts = json.loads(content["texts"])
         assert "instagram" in texts
         assert "caption" in texts["instagram"]
-        assert "overlay_text" in texts["instagram"]
+        # v2: texts содержит story_type, slides находятся в files
+        assert "story_type" in texts["instagram"]
 
         files = json.loads(content["files"])
         assert "image_path" in files
-        from pathlib import Path
+        # image_path = первый слайд
         assert Path(files["image_path"]).exists()
+        assert "slides" in files
+        assert len(files["slides"]) >= 1
 
         sched = _get_schedule_for(item["content_id"])
         assert len(sched) == 1

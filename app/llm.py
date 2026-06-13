@@ -693,6 +693,11 @@ _FAKE_ITEM_STORY = json.dumps(
         ),
         "image_keywords": ["digital marketing", "analytics", "growth"],
         "overlay_text": "Охват +40% без бюджета",
+        "story_type": "carousel",
+        "slides": [
+            {"text": "Охват +40%", "image_keywords": ["digital marketing", "analytics"], "position": "center"},
+            {"text": "Без бюджета", "image_keywords": ["growth", "chart"], "position": "bottom"},
+        ],
         "caption": (
             "Один простой хак поднял охват на 40% 📈\n"
             "Подробнее — в следующем посте 👉"

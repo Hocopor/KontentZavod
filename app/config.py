@@ -47,6 +47,11 @@ _FIELDS: dict[str, tuple[str, str, str]] = {
     "FFPROBE_BIN":         ("FFPROBE_BIN",          "ffprobe",                  "str"),
     # YouTube Data API v3: 10 000 юнитов/день, videos.insert = 1600 юнитов → ~6 загрузок
     "YOUTUBE_DAILY_LIMIT": ("YOUTUBE_DAILY_LIMIT",  "6",                        "int"),
+    # Шрифт и размер для наложения текста на слайды сторис (этап 8.5).
+    # На сервере: "DejaVu Sans" или "Liberation Sans" (apt install fonts-dejavu).
+    # Шрифт может содержать пробел — НЕ добавляем в _SINGLE_TOKEN_FIELDS.
+    "STORY_FONT":          ("STORY_FONT",           "Arial",                    "str"),
+    "STORY_FONT_SIZE":     ("STORY_FONT_SIZE",      "96",                       "int"),
 }
 
 # Строковые поля, значения которых по своей природе не содержат пробелов
