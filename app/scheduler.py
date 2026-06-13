@@ -9,7 +9,7 @@ APScheduler-планировщик КонтентЗавода.
   - process_brain: каждые 2 минуты → build стратегий + rolling-покрытие контент-плана (этап 7).
   - process_factory: каждую минуту → генерация контента по одобренным пунктам плана, 1 за тик (этап 7).
   - rotate_media: ежедневно 04:00 UTC → ротация медиафайлов.
-  - collect_metrics: ежедневно 03:00 UTC → сбор метрик публикаций (VK/YouTube).
+  - collect_metrics: интервально раз в METRICS_INTERVAL_HOURS часов (default 6) с джиттером → сбор метрик публикаций (VK/YouTube).
   - analyze_all: еженедельно пн 05:00 UTC → LLM-анализ метрик → learnings.
 """
 import logging
@@ -98,12 +98,14 @@ def start_scheduler() -> None:
         max_instances=1,
     )
 
-    # Джоб сбора метрик: ежедневно в 03:00 UTC (до ротации медиа в 04:00)
+    # Джоб сбора метрик: интервально раз в METRICS_INTERVAL_HOURS часов (этап 8.7).
+    # Джиттер 300 с (±5 мин) — не бить по API в одинаковые моменты (антиблок).
+    _metrics_interval = max(1, _cfg.settings.METRICS_INTERVAL_HOURS)
     _scheduler.add_job(
         collect_metrics,
-        trigger="cron",
-        hour=3,
-        minute=0,
+        trigger="interval",
+        hours=_metrics_interval,
+        jitter=300,
         id="collect_metrics",
         replace_existing=True,
         max_instances=1,

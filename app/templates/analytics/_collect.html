@@ -1,0 +1,12 @@
+<button class="btn"
+        hx-post="/analytics/collect"
+        hx-target="#collect-status"
+        hx-swap="innerHTML"
+        hx-disabled-elt="this"
+        hx-indicator="#collect-spin">
+    🔄 Обновить метрики
+</button>
+<span id="collect-spin" class="htmx-indicator" style="color:var(--text2);font-size:.85rem;">⏳ Сбор…</span>
+{% if collect_result %}
+<span style="color:var(--text2);font-size:.85rem;">{{ collect_result }}</span>
+{% endif %}

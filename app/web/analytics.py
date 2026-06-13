@@ -7,17 +7,23 @@
 """
 import json
 import logging
+import time
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.analytics.collector import collect_metrics
 from app.db import get_db
 from app.templates_env import templates
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analytics")
+
+# Троттлинг ручного сбора метрик (защита от дабл-клика / частого F5).
+_last_collect_ts: float = 0.0
+_COLLECT_THROTTLE_SEC = 20.0
 
 PLATFORM_NAMES = {
     "telegram": "Telegram",
@@ -415,6 +421,34 @@ async def analytics_page(
             "error": error,
             "platform_names": PLATFORM_NAMES,
         },
+    )
+
+
+@router.post("/collect", response_class=HTMLResponse)
+def analytics_collect_now(request: Request):
+    """Ручной запуск сбора метрик (HTMX). Возвращает фрагмент _collect.html с результатом."""
+    global _last_collect_ts
+    now = time.monotonic()
+    if now - _last_collect_ts < _COLLECT_THROTTLE_SEC:
+        return templates.TemplateResponse(
+            request,
+            "analytics/_collect.html",
+            {"collect_result": "⏳ Только что обновляли — подождите немного."},
+        )
+    _last_collect_ts = now
+    try:
+        result = collect_metrics()
+        msg = (
+            f"✓ Собрано: {result['collected']}, "
+            f"пропущено: {result['skipped']}, ошибок: {result['errors']}"
+        )
+    except Exception as exc:
+        logger.warning("Ручной сбор метрик упал: %s", exc)
+        msg = "✗ Ошибка сбора метрик (см. логи)"
+    return templates.TemplateResponse(
+        request,
+        "analytics/_collect.html",
+        {"collect_result": msg},
     )
 
 

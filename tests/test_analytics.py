@@ -2,12 +2,14 @@
 Тесты страницы аналитики /analytics и ручного ввода метрик.
 """
 import json
+import time as _time
 import uuid
 from datetime import datetime, timedelta, date
 
 import pytest
 
 import app.config as cfg_module
+import app.web.analytics as analytics_module
 from app.db import get_db, init_db
 
 
@@ -338,3 +340,56 @@ class TestAnalyticsProjectFilter:
         assert resp.status_code == 200
         assert "Проект А пост" in resp.text
         assert "Проект Б пост" in resp.text
+
+
+# ─── 5. Кнопка «Обновить метрики» (этап 8.7) ─────────────────────────────────
+
+
+class TestCollectNow:
+    def test_metrics_interval_default(self, patch_env):
+        # default настройки = 6 часов
+        assert cfg_module.settings.METRICS_INTERVAL_HOURS == 6
+
+    def test_collect_button_on_page(self, client, patch_env):
+        _setup_db()
+        resp = client.get("/analytics")
+        assert resp.status_code == 200
+        assert 'hx-post="/analytics/collect"' in resp.text
+
+    def test_collect_runs_and_shows_result(self, client, patch_env, monkeypatch):
+        _setup_db()
+        monkeypatch.setattr(analytics_module, "_last_collect_ts", 0.0)
+        monkeypatch.setattr(
+            analytics_module, "collect_metrics",
+            lambda: {"collected": 3, "skipped": 1, "errors": 0},
+        )
+        resp = client.post("/analytics/collect")
+        assert resp.status_code == 200
+        assert "Собрано: 3" in resp.text
+        assert "пропущено: 1" in resp.text
+        # фрагмент снова содержит кнопку (для повторного запуска)
+        assert 'hx-post="/analytics/collect"' in resp.text
+
+    def test_collect_throttled(self, client, patch_env, monkeypatch):
+        _setup_db()
+        # имитируем недавний запуск → следующий клик должен быть отбит
+        monkeypatch.setattr(analytics_module, "_last_collect_ts", _time.monotonic())
+        called = {"n": 0}
+        def _spy():
+            called["n"] += 1
+            return {"collected": 0, "skipped": 0, "errors": 0}
+        monkeypatch.setattr(analytics_module, "collect_metrics", _spy)
+        resp = client.post("/analytics/collect")
+        assert resp.status_code == 200
+        assert "подождите" in resp.text.lower()
+        assert called["n"] == 0  # сборщик не вызывался
+
+    def test_collect_handles_collector_error(self, client, patch_env, monkeypatch):
+        _setup_db()
+        monkeypatch.setattr(analytics_module, "_last_collect_ts", 0.0)
+        def _boom():
+            raise RuntimeError("api down")
+        monkeypatch.setattr(analytics_module, "collect_metrics", _boom)
+        resp = client.post("/analytics/collect")
+        assert resp.status_code == 200
+        assert "Ошибка" in resp.text

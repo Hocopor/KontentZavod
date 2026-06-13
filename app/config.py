@@ -56,6 +56,10 @@ _FIELDS: dict[str, tuple[str, str, str]] = {
     # >0 — субтитры позже, для подстройки систематического лида edge-tts WordBoundary.
     # Настраивается при приёмке без правки кода.
     "SUBTITLE_OFFSET_SEC": ("SUBTITLE_OFFSET_SEC",  "0.0",                      "float"),
+    # Интервал авто-сбора метрик в часах (этап 8.7). default 6.
+    # Джоб collect_metrics запускается раз в N часов с джиттером (антиблок),
+    # а не daily cron. Тип int.
+    "METRICS_INTERVAL_HOURS": ("METRICS_INTERVAL_HOURS", "6",                   "int"),
 }
 
 # Строковые поля, значения которых по своей природе не содержат пробелов
